@@ -1,4 +1,6 @@
-FROM golang:1.12
+FROM centos
+
+COPY --from=no-such-base-image /etc/os-release /
 
 RUN apt-get update && apt-get install -y \
     apparmor \
