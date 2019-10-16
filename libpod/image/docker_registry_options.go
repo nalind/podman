@@ -26,6 +26,10 @@ type DockerRegistryOptions struct {
 	// certificates and allows connecting to registries without encryption
 	// - or forces it on even if registries.conf has the registry configured as insecure.
 	DockerInsecureSkipTLSVerify types.OptionalBool
+	// If not "", overrides the use of platform.GOARCH when choosing an image or verifying architecture match.
+	ArchitectureChoice string
+	// If not "", overrides the use of platform.GOOS when choosing an image or verifying OS match.
+	OSChoice string
 }
 
 // GetSystemContext constructs a new system context from a parent context. the values in the DockerRegistryOptions, and other parameters.
@@ -35,6 +39,8 @@ func (o DockerRegistryOptions) GetSystemContext(parent *types.SystemContext, add
 		DockerCertPath:              o.DockerCertPath,
 		DockerInsecureSkipTLSVerify: o.DockerInsecureSkipTLSVerify,
 		DockerArchiveAdditionalTags: additionalDockerArchiveTags,
+		ArchitectureChoice:          o.ArchitectureChoice,
+		OSChoice:                    o.OSChoice,
 	}
 	if parent != nil {
 		sc.SignaturePolicyPath = parent.SignaturePolicyPath

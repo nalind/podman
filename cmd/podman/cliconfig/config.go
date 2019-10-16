@@ -430,6 +430,8 @@ type PullValues struct {
 	Authfile        string
 	CertDir         string
 	Creds           string
+	OverrideArch    string
+	OverrideOS      string
 	Quiet           bool
 	SignaturePolicy string
 	TlsVerify       bool
