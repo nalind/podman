@@ -1,11 +1,9 @@
-// +build !remoteclient
-
 package integration
 
 import (
 	"os"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -24,7 +22,7 @@ var _ = Describe("Podman run dns", func() {
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.RestoreAllArtifacts()
+		podmanTest.SeedImages()
 	})
 
 	AfterEach(func() {
@@ -38,41 +36,48 @@ var _ = Describe("Podman run dns", func() {
 		session := podmanTest.Podman([]string{"run", "--dns-search=foobar.com", ALPINE, "cat", "/etc/resolv.conf"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
-		session.LineInOuputStartsWith("search foobar.com")
+		session.LineInOutputStartsWith("search foobar.com")
+	})
+
+	It("podman run remove all search domain", func() {
+		session := podmanTest.Podman([]string{"run", "--dns-search=.", ALPINE, "cat", "/etc/resolv.conf"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(session.LineInOutputStartsWith("search")).To(BeFalse())
 	})
 
 	It("podman run add bad dns server", func() {
 		session := podmanTest.Podman([]string{"run", "--dns=foobar", ALPINE, "ls"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Not(Equal(0)))
+		Expect(session).To(ExitWithError())
 	})
 
 	It("podman run add dns server", func() {
 		session := podmanTest.Podman([]string{"run", "--dns=1.2.3.4", ALPINE, "cat", "/etc/resolv.conf"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
-		session.LineInOuputStartsWith("server 1.2.3.4")
+		session.LineInOutputStartsWith("server 1.2.3.4")
 	})
 
 	It("podman run add dns option", func() {
 		session := podmanTest.Podman([]string{"run", "--dns-opt=debug", ALPINE, "cat", "/etc/resolv.conf"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
-		session.LineInOuputStartsWith("options debug")
+		session.LineInOutputStartsWith("options debug")
 	})
 
 	It("podman run add bad host", func() {
 		session := podmanTest.Podman([]string{"run", "--add-host=foo:1.2", ALPINE, "ls"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Not(Equal(0)))
+		Expect(session).To(ExitWithError())
 	})
 
 	It("podman run add host", func() {
 		session := podmanTest.Podman([]string{"run", "--add-host=foobar:1.1.1.1", "--add-host=foobaz:2001:db8::68", ALPINE, "cat", "/etc/hosts"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
-		session.LineInOuputStartsWith("1.1.1.1 foobar")
-		session.LineInOuputStartsWith("2001:db8::68 foobaz")
+		session.LineInOutputStartsWith("1.1.1.1 foobar")
+		session.LineInOutputStartsWith("2001:db8::68 foobaz")
 	})
 
 	It("podman run add hostname", func() {
@@ -88,10 +93,27 @@ var _ = Describe("Podman run dns", func() {
 	})
 
 	It("podman run add hostname sets /etc/hosts", func() {
-		SkipIfRootless()
 		session := podmanTest.Podman([]string{"run", "-t", "-i", "--hostname=foobar", ALPINE, "cat", "/etc/hosts"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 		Expect(session.LineInOutputContains("foobar")).To(BeTrue())
+	})
+
+	It("podman run mutually excludes --dns* and --network", func() {
+		session := podmanTest.Podman([]string{"run", "--dns=1.2.3.4", "--network", "container:ALPINE", ALPINE})
+		session.WaitWithDefaultTimeout()
+		Expect(session).To(ExitWithError())
+
+		session = podmanTest.Podman([]string{"run", "--dns-opt=1.2.3.4", "--network", "container:ALPINE", ALPINE})
+		session.WaitWithDefaultTimeout()
+		Expect(session).To(ExitWithError())
+
+		session = podmanTest.Podman([]string{"run", "--dns-search=foobar.com", "--network", "none", ALPINE})
+		session.WaitWithDefaultTimeout()
+		Expect(session).To(ExitWithError())
+
+		session = podmanTest.Podman([]string{"run", "--dns=1.2.3.4", "--network", "host", ALPINE})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To((Equal(0)))
 	})
 })

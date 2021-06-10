@@ -1,0 +1,6 @@
+# requirements file for readthedocs pip installs
+
+# use md instead of rst
+recommonmark
+# needed for markdown table support
+sphinx-markdown-tables

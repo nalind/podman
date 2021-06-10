@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"os/exec"
 	"runtime"
@@ -14,7 +15,7 @@ import (
 	"github.com/containers/storage/pkg/parsers/kernel"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"github.com/onsi/gomega/gexec"
+	. "github.com/onsi/gomega/gexec"
 )
 
 var (
@@ -26,25 +27,29 @@ var (
 // PodmanTestCommon contains common functions will be updated later in
 // the inheritance structs
 type PodmanTestCommon interface {
-	MakeOptions(args []string) []string
+	MakeOptions(args []string, noEvents, noCache bool) []string
 	WaitForContainer() bool
 	WaitContainerReady(id string, expStr string, timeout int, step int) bool
 }
 
 // PodmanTest struct for command line options
 type PodmanTest struct {
-	PodmanMakeOptions  func(args []string) []string
+	PodmanMakeOptions  func(args []string, noEvents, noCache bool) []string
 	PodmanBinary       string
 	ArtifactPath       string
 	TempDir            string
 	RemoteTest         bool
 	RemotePodmanBinary string
-	VarlinkSession     *os.Process
+	RemoteSession      *os.Process
+	RemoteSocket       string
+	RemoteCommand      *exec.Cmd
+	ImageCacheDir      string
+	ImageCacheFS       string
 }
 
 // PodmanSession wraps the gexec.session so we can extend it
 type PodmanSession struct {
-	*gexec.Session
+	*Session
 }
 
 // HostOS is a simple struct for the test os
@@ -55,18 +60,21 @@ type HostOS struct {
 }
 
 // MakeOptions assembles all podman options
-func (p *PodmanTest) MakeOptions(args []string) []string {
-	return p.PodmanMakeOptions(args)
+func (p *PodmanTest) MakeOptions(args []string, noEvents, noCache bool) []string {
+	return p.PodmanMakeOptions(args, noEvents, noCache)
 }
 
-// PodmanAsUserBase exec podman as user. uid and gid is set for credentials useage. env is used
+// PodmanAsUserBase exec podman as user. uid and gid is set for credentials usage. env is used
 // to record the env for debugging
-func (p *PodmanTest) PodmanAsUserBase(args []string, uid, gid uint32, cwd string, env []string) *PodmanSession {
+func (p *PodmanTest) PodmanAsUserBase(args []string, uid, gid uint32, cwd string, env []string, noEvents, noCache bool, extraFiles []*os.File) *PodmanSession {
 	var command *exec.Cmd
-	podmanOptions := p.MakeOptions(args)
+	podmanOptions := p.MakeOptions(args, noEvents, noCache)
 	podmanBinary := p.PodmanBinary
 	if p.RemoteTest {
 		podmanBinary = p.RemotePodmanBinary
+	}
+	if p.RemoteTest {
+		podmanOptions = append([]string{"--remote", "--url", p.RemoteSocket}, podmanOptions...)
 	}
 	if env == nil {
 		fmt.Printf("Running: %s %s\n", podmanBinary, strings.Join(podmanOptions, " "))
@@ -87,7 +95,9 @@ func (p *PodmanTest) PodmanAsUserBase(args []string, uid, gid uint32, cwd string
 		command.Dir = cwd
 	}
 
-	session, err := gexec.Start(command, GinkgoWriter, GinkgoWriter)
+	command.ExtraFiles = extraFiles
+
+	session, err := Start(command, GinkgoWriter, GinkgoWriter)
 	if err != nil {
 		Fail(fmt.Sprintf("unable to run podman command: %s\n%v", strings.Join(podmanOptions, " "), err))
 	}
@@ -95,8 +105,8 @@ func (p *PodmanTest) PodmanAsUserBase(args []string, uid, gid uint32, cwd string
 }
 
 // PodmanBase exec podman with default env.
-func (p *PodmanTest) PodmanBase(args []string) *PodmanSession {
-	return p.PodmanAsUserBase(args, 0, 0, "", nil)
+func (p *PodmanTest) PodmanBase(args []string, noEvents, noCache bool) *PodmanSession {
+	return p.PodmanAsUserBase(args, 0, 0, "", nil, noEvents, noCache, nil)
 }
 
 // WaitForContainer waits on a started container
@@ -114,9 +124,9 @@ func (p *PodmanTest) WaitForContainer() bool {
 // containers are currently running.
 func (p *PodmanTest) NumberOfContainersRunning() int {
 	var containers []string
-	ps := p.PodmanBase([]string{"ps", "-q"})
+	ps := p.PodmanBase([]string{"ps", "-q"}, false, true)
 	ps.WaitWithDefaultTimeout()
-	Expect(ps.ExitCode()).To(Equal(0))
+	Expect(ps).Should(Exit(0))
 	for _, i := range ps.OutputToStringArray() {
 		if i != "" {
 			containers = append(containers, i)
@@ -129,7 +139,7 @@ func (p *PodmanTest) NumberOfContainersRunning() int {
 // containers are currently defined.
 func (p *PodmanTest) NumberOfContainers() int {
 	var containers []string
-	ps := p.PodmanBase([]string{"ps", "-aq"})
+	ps := p.PodmanBase([]string{"ps", "-aq"}, false, true)
 	ps.WaitWithDefaultTimeout()
 	Expect(ps.ExitCode()).To(Equal(0))
 	for _, i := range ps.OutputToStringArray() {
@@ -144,7 +154,7 @@ func (p *PodmanTest) NumberOfContainers() int {
 // pods are currently defined.
 func (p *PodmanTest) NumberOfPods() int {
 	var pods []string
-	ps := p.PodmanBase([]string{"pod", "ps", "-q"})
+	ps := p.PodmanBase([]string{"pod", "ps", "-q"}, false, true)
 	ps.WaitWithDefaultTimeout()
 	Expect(ps.ExitCode()).To(Equal(0))
 	for _, i := range ps.OutputToStringArray() {
@@ -160,7 +170,7 @@ func (p *PodmanTest) NumberOfPods() int {
 func (p *PodmanTest) GetContainerStatus() string {
 	var podmanArgs = []string{"ps"}
 	podmanArgs = append(podmanArgs, "--all", "--format={{.Status}}")
-	session := p.PodmanBase(podmanArgs)
+	session := p.PodmanBase(podmanArgs, false, true)
 	session.WaitWithDefaultTimeout()
 	return session.OutputToString()
 }
@@ -168,7 +178,7 @@ func (p *PodmanTest) GetContainerStatus() string {
 // WaitContainerReady waits process or service inside container start, and ready to be used.
 func (p *PodmanTest) WaitContainerReady(id string, expStr string, timeout int, step int) bool {
 	startTime := time.Now()
-	s := p.PodmanBase([]string{"logs", id})
+	s := p.PodmanBase([]string{"logs", id}, false, true)
 	s.WaitWithDefaultTimeout()
 
 	for {
@@ -181,7 +191,7 @@ func (p *PodmanTest) WaitContainerReady(id string, expStr string, timeout int, s
 			return true
 		}
 		time.Sleep(time.Duration(step) * time.Second)
-		s = p.PodmanBase([]string{"logs", id})
+		s = p.PodmanBase([]string{"logs", id}, false, true)
 		s.WaitWithDefaultTimeout()
 	}
 }
@@ -198,7 +208,11 @@ func WaitContainerReady(p PodmanTestCommon, id string, expStr string, timeout in
 
 // OutputToString formats session output to string
 func (s *PodmanSession) OutputToString() string {
-	fields := strings.Fields(fmt.Sprintf("%s", s.Out.Contents()))
+	if s == nil || s.Out == nil || s.Out.Contents() == nil {
+		return ""
+	}
+
+	fields := strings.Fields(string(s.Out.Contents()))
 	return strings.Join(fields, " ")
 }
 
@@ -206,7 +220,7 @@ func (s *PodmanSession) OutputToString() string {
 // where each array item is a line split by newline
 func (s *PodmanSession) OutputToStringArray() []string {
 	var results []string
-	output := fmt.Sprintf("%s", s.Out.Contents())
+	output := string(s.Out.Contents())
 	for _, line := range strings.Split(output, "\n") {
 		if line != "" {
 			results = append(results, line)
@@ -217,14 +231,14 @@ func (s *PodmanSession) OutputToStringArray() []string {
 
 // ErrorToString formats session stderr to string
 func (s *PodmanSession) ErrorToString() string {
-	fields := strings.Fields(fmt.Sprintf("%s", s.Err.Contents()))
+	fields := strings.Fields(string(s.Err.Contents()))
 	return strings.Join(fields, " ")
 }
 
 // ErrorToStringArray returns the stderr output as a []string
 // where each array item is a line split by newline
 func (s *PodmanSession) ErrorToStringArray() []string {
-	output := fmt.Sprintf("%s", s.Err.Contents())
+	output := string(s.Err.Contents())
 	return strings.Split(output, "\n")
 }
 
@@ -262,9 +276,9 @@ func (s *PodmanSession) ErrorGrepString(term string) (bool, []string) {
 	return matches, greps
 }
 
-//LineInOutputStartsWith returns true if a line in a
+// LineInOutputStartsWith returns true if a line in a
 // session output starts with the supplied string
-func (s *PodmanSession) LineInOuputStartsWith(term string) bool {
+func (s *PodmanSession) LineInOutputStartsWith(term string) bool {
 	for _, i := range s.OutputToStringArray() {
 		if strings.HasPrefix(i, term) {
 			return true
@@ -273,7 +287,7 @@ func (s *PodmanSession) LineInOuputStartsWith(term string) bool {
 	return false
 }
 
-//LineInOutputContains returns true if a line in a
+// LineInOutputContains returns true if a line in a
 // session output contains the supplied string
 func (s *PodmanSession) LineInOutputContains(term string) bool {
 	for _, i := range s.OutputToStringArray() {
@@ -284,17 +298,12 @@ func (s *PodmanSession) LineInOutputContains(term string) bool {
 	return false
 }
 
-//LineInOutputContainsTag returns true if a line in the
+// LineInOutputContainsTag returns true if a line in the
 // session's output contains the repo-tag pair as returned
 // by podman-images(1).
 func (s *PodmanSession) LineInOutputContainsTag(repo, tag string) bool {
 	tagMap := tagOutputToMap(s.OutputToStringArray())
-	for r, t := range tagMap {
-		if repo == r && tag == t {
-			return true
-		}
-	}
-	return false
+	return tagMap[repo][tag]
 }
 
 // IsJSONOutputValid attempts to unmarshal the session buffer
@@ -310,7 +319,7 @@ func (s *PodmanSession) IsJSONOutputValid() bool {
 
 // WaitWithDefaultTimeout waits for process finished with defaultWaitTimeout
 func (s *PodmanSession) WaitWithDefaultTimeout() {
-	s.Wait(defaultWaitTimeout)
+	Eventually(s, defaultWaitTimeout).Should(Exit())
 	os.Stdout.Sync()
 	os.Stderr.Sync()
 	fmt.Println("output:", s.OutputToString())
@@ -324,11 +333,21 @@ func CreateTempDirInTempDir() (string, error) {
 // SystemExec is used to exec a system command to check its exit code or output
 func SystemExec(command string, args []string) *PodmanSession {
 	c := exec.Command(command, args...)
-	session, err := gexec.Start(c, GinkgoWriter, GinkgoWriter)
+	session, err := Start(c, GinkgoWriter, GinkgoWriter)
 	if err != nil {
 		Fail(fmt.Sprintf("unable to run command: %s %s", command, strings.Join(args, " ")))
 	}
 	session.Wait(defaultWaitTimeout)
+	return &PodmanSession{session}
+}
+
+// StartSystemExec is used to start exec a system command
+func StartSystemExec(command string, args []string) *PodmanSession {
+	c := exec.Command(command, args...)
+	session, err := Start(c, GinkgoWriter, GinkgoWriter)
+	if err != nil {
+		Fail(fmt.Sprintf("unable to run command: %s %s", command, strings.Join(args, " ")))
+	}
 	return &PodmanSession{session}
 }
 
@@ -342,11 +361,12 @@ func StringInSlice(s string, sl []string) bool {
 	return false
 }
 
-//tagOutPutToMap parses each string in imagesOutput and returns
-// a map of repo:tag pairs.  Notice, the first array item will
+// tagOutPutToMap parses each string in imagesOutput and returns
+// a map whose key is a repo, and value is another map whose keys
+// are the tags found for that repo. Notice, the first array item will
 // be skipped as it's considered to be the header.
-func tagOutputToMap(imagesOutput []string) map[string]string {
-	m := make(map[string]string)
+func tagOutputToMap(imagesOutput []string) map[string]map[string]bool {
+	m := make(map[string]map[string]bool)
 	// iterate over output but skip the header
 	for _, i := range imagesOutput[1:] {
 		tmp := []string{}
@@ -360,12 +380,15 @@ func tagOutputToMap(imagesOutput []string) map[string]string {
 		if len(tmp) < 2 {
 			continue
 		}
-		m[tmp[0]] = tmp[1]
+		if m[tmp[0]] == nil {
+			m[tmp[0]] = map[string]bool{}
+		}
+		m[tmp[0]][tmp[1]] = true
 	}
 	return m
 }
 
-//GetHostDistributionInfo returns a struct with its distribution name and version
+// GetHostDistributionInfo returns a struct with its distribution name and version
 func GetHostDistributionInfo() HostOS {
 	f, err := os.Open(OSReleasePath)
 	defer f.Close()
@@ -409,7 +432,7 @@ func IsKernelNewerThan(version string) (bool, error) {
 
 }
 
-//IsCommandAvaible check if command exist
+// IsCommandAvailable check if command exist
 func IsCommandAvailable(command string) bool {
 	check := exec.Command("bash", "-c", strings.Join([]string{"command -v", command}, " "))
 	err := check.Run()
@@ -442,4 +465,30 @@ func Containerized() bool {
 		return true
 	}
 	return false
+}
+
+func init() {
+	rand.Seed(GinkgoRandomSeed())
+}
+
+var randomLetters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+// RandomString returns a string of given length composed of random characters
+func RandomString(n int) string {
+
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = randomLetters[rand.Intn(len(randomLetters))]
+	}
+	return string(b)
+}
+
+//SkipIfInContainer skips a test if the test is run inside a container
+func SkipIfInContainer(reason string) {
+	if len(reason) < 5 {
+		panic("SkipIfInContainer must specify a reason to skip")
+	}
+	if os.Getenv("TEST_ENVIRON") == "container" {
+		Skip("[container]: " + reason)
+	}
 }

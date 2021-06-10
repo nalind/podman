@@ -4,11 +4,12 @@ import (
 	"context"
 	"time"
 
-	istorage "github.com/containers/image/storage"
-	"github.com/containers/image/types"
+	istorage "github.com/containers/image/v5/storage"
+	"github.com/containers/image/v5/types"
+	"github.com/containers/podman/v3/libpod/define"
 	"github.com/containers/storage"
-	"github.com/opencontainers/image-spec/specs-go/v1"
-	opentracing "github.com/opentracing/opentracing-go"
+	"github.com/containers/storage/pkg/idtools"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -19,8 +20,8 @@ type storageService struct {
 
 // getStorageService returns a storageService which can create container root
 // filesystems from images
-func getStorageService(store storage.Store) (*storageService, error) {
-	return &storageService{store: store}, nil
+func getStorageService(store storage.Store) *storageService {
+	return &storageService{store: store}
 }
 
 // ContainerInfo wraps a subset of information about a container: the locations
@@ -34,6 +35,8 @@ type ContainerInfo struct {
 	Config       *v1.Image
 	ProcessLabel string
 	MountLabel   string
+	UIDMap       []idtools.IDMap
+	GIDMap       []idtools.IDMap
 }
 
 // RuntimeContainerMetadata is the structure that we encode as JSON and store
@@ -62,16 +65,12 @@ func (metadata *RuntimeContainerMetadata) SetMountLabel(mountLabel string) {
 
 // CreateContainerStorage creates the storage end of things.  We already have the container spec created
 // TO-DO We should be passing in an Image object in the future.
-func (r *storageService) CreateContainerStorage(ctx context.Context, systemContext *types.SystemContext, imageName, imageID, containerName, containerID string, options storage.ContainerOptions) (cinfo ContainerInfo, err error) {
-	span, _ := opentracing.StartSpanFromContext(ctx, "createContainerStorage")
-	span.SetTag("type", "storageService")
-	defer span.Finish()
-
+func (r *storageService) CreateContainerStorage(ctx context.Context, systemContext *types.SystemContext, imageName, imageID, containerName, containerID string, options storage.ContainerOptions) (_ ContainerInfo, retErr error) {
 	var imageConfig *v1.Image
 	if imageName != "" {
 		var ref types.ImageReference
 		if containerName == "" {
-			return ContainerInfo{}, ErrEmptyID
+			return ContainerInfo{}, define.ErrEmptyID
 		}
 		// Check if we have the specified image.
 		ref, err := istorage.Transport.ParseStoreReference(r.store, imageID)
@@ -128,9 +127,9 @@ func (r *storageService) CreateContainerStorage(ctx context.Context, systemConte
 	// If anything fails after this point, we need to delete the incomplete
 	// container before returning.
 	defer func() {
-		if err != nil {
-			if err2 := r.store.DeleteContainer(container.ID); err2 != nil {
-				logrus.Infof("%v deleting partially-created container %q", err2, container.ID)
+		if retErr != nil {
+			if err := r.store.DeleteContainer(container.ID); err != nil {
+				logrus.Infof("%v deleting partially-created container %q", err, container.ID)
 
 				return
 			}
@@ -165,6 +164,8 @@ func (r *storageService) CreateContainerStorage(ctx context.Context, systemConte
 	logrus.Debugf("container %q has run directory %q", container.ID, containerRunDir)
 
 	return ContainerInfo{
+		UIDMap:       options.UIDMap,
+		GIDMap:       options.GIDMap,
 		Dir:          containerDir,
 		RunDir:       containerRunDir,
 		Config:       imageConfig,
@@ -175,7 +176,7 @@ func (r *storageService) CreateContainerStorage(ctx context.Context, systemConte
 
 func (r *storageService) DeleteContainer(idOrName string) error {
 	if idOrName == "" {
-		return ErrEmptyID
+		return define.ErrEmptyID
 	}
 	container, err := r.store.Container(idOrName)
 	if err != nil {
@@ -214,7 +215,7 @@ func (r *storageService) MountContainerImage(idOrName string) (string, error) {
 	container, err := r.store.Container(idOrName)
 	if err != nil {
 		if errors.Cause(err) == storage.ErrContainerUnknown {
-			return "", ErrNoSuchCtr
+			return "", define.ErrNoSuchCtr
 		}
 		return "", err
 	}
@@ -233,7 +234,7 @@ func (r *storageService) MountContainerImage(idOrName string) (string, error) {
 
 func (r *storageService) UnmountContainerImage(idOrName string, force bool) (bool, error) {
 	if idOrName == "" {
-		return false, ErrEmptyID
+		return false, define.ErrEmptyID
 	}
 	container, err := r.store.Container(idOrName)
 	if err != nil {
@@ -260,7 +261,7 @@ func (r *storageService) UnmountContainerImage(idOrName string, force bool) (boo
 
 func (r *storageService) MountedContainerImage(idOrName string) (int, error) {
 	if idOrName == "" {
-		return 0, ErrEmptyID
+		return 0, define.ErrEmptyID
 	}
 	container, err := r.store.Container(idOrName)
 	if err != nil {
@@ -277,7 +278,7 @@ func (r *storageService) GetMountpoint(id string) (string, error) {
 	container, err := r.store.Container(id)
 	if err != nil {
 		if errors.Cause(err) == storage.ErrContainerUnknown {
-			return "", ErrNoSuchCtr
+			return "", define.ErrNoSuchCtr
 		}
 		return "", err
 	}
@@ -293,7 +294,7 @@ func (r *storageService) GetWorkDir(id string) (string, error) {
 	container, err := r.store.Container(id)
 	if err != nil {
 		if errors.Cause(err) == storage.ErrContainerUnknown {
-			return "", ErrNoSuchCtr
+			return "", define.ErrNoSuchCtr
 		}
 		return "", err
 	}
@@ -304,7 +305,7 @@ func (r *storageService) GetRunDir(id string) (string, error) {
 	container, err := r.store.Container(id)
 	if err != nil {
 		if errors.Cause(err) == storage.ErrContainerUnknown {
-			return "", ErrNoSuchCtr
+			return "", define.ErrNoSuchCtr
 		}
 		return "", err
 	}

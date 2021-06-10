@@ -1,14 +1,17 @@
 package registries
 
+// TODO: this package should not exist anymore.  Users should either use
+// c/image's `sysregistriesv2` package directly OR, even better, we cache a
+// config in libpod's image runtime so we don't need to parse the
+// registries.conf files redundantly.
+
 import (
 	"os"
 	"path/filepath"
-	"strings"
 
-	"github.com/containers/image/pkg/sysregistries"
-	"github.com/containers/image/types"
-	"github.com/containers/libpod/pkg/rootless"
-	"github.com/docker/distribution/reference"
+	"github.com/containers/image/v5/pkg/sysregistriesv2"
+	"github.com/containers/image/v5/types"
+	"github.com/containers/podman/v3/pkg/rootless"
 	"github.com/pkg/errors"
 )
 
@@ -21,7 +24,10 @@ var userRegistriesFile = filepath.Join(os.Getenv("HOME"), ".config/containers/re
 // FIXME: This should be centralized in a global SystemContext initializer inherited throughout the code,
 // not haphazardly called throughout the way it is being called now.
 func SystemRegistriesConfPath() string {
-	if envOverride := os.Getenv("REGISTRIES_CONFIG_PATH"); len(envOverride) > 0 {
+	if envOverride, ok := os.LookupEnv("CONTAINERS_REGISTRIES_CONF"); ok {
+		return envOverride
+	}
+	if envOverride, ok := os.LookupEnv("REGISTRIES_CONFIG_PATH"); ok {
 		return envOverride
 	}
 
@@ -34,34 +40,46 @@ func SystemRegistriesConfPath() string {
 	return ""
 }
 
-// GetRegistries obtains the list of registries defined in the global registries file.
-func GetRegistries() ([]string, error) {
-	searchRegistries, err := sysregistries.GetRegistries(&types.SystemContext{SystemRegistriesConfPath: SystemRegistriesConfPath()})
-	if err != nil {
-		return nil, errors.Wrapf(err, "unable to parse the registries.conf file")
-	}
-	return searchRegistries, nil
-}
-
-// GetInsecureRegistries obtains the list of insecure registries from the global registration file.
-func GetInsecureRegistries() ([]string, error) {
-	registries, err := sysregistries.GetInsecureRegistries(&types.SystemContext{SystemRegistriesConfPath: SystemRegistriesConfPath()})
+// GetRegistriesData obtains the list of registries
+func GetRegistriesData() ([]sysregistriesv2.Registry, error) {
+	registries, err := sysregistriesv2.GetRegistries(&types.SystemContext{SystemRegistriesConfPath: SystemRegistriesConfPath()})
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to parse the registries.conf file")
 	}
 	return registries, nil
 }
 
-// GetRegistry returns the registry name from a string if specified
-func GetRegistry(image string) (string, error) {
-	// It is possible to only have the registry name in the format "myregistry/"
-	// if so, just trim the "/" from the end and return the registry name
-	if strings.HasSuffix(image, "/") {
-		return strings.TrimSuffix(image, "/"), nil
-	}
-	imgRef, err := reference.Parse(image)
+// GetRegistries obtains the list of search registries defined in the global registries file.
+func GetRegistries() ([]string, error) {
+	return sysregistriesv2.UnqualifiedSearchRegistries(&types.SystemContext{SystemRegistriesConfPath: SystemRegistriesConfPath()})
+}
+
+// GetBlockedRegistries obtains the list of blocked registries defined in the global registries file.
+func GetBlockedRegistries() ([]string, error) {
+	var blockedRegistries []string
+	registries, err := GetRegistriesData()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return reference.Domain(imgRef.(reference.Named)), nil
+	for _, reg := range registries {
+		if reg.Blocked {
+			blockedRegistries = append(blockedRegistries, reg.Prefix)
+		}
+	}
+	return blockedRegistries, nil
+}
+
+// GetInsecureRegistries obtains the list of insecure registries from the global registration file.
+func GetInsecureRegistries() ([]string, error) {
+	var insecureRegistries []string
+	registries, err := GetRegistriesData()
+	if err != nil {
+		return nil, err
+	}
+	for _, reg := range registries {
+		if reg.Insecure {
+			insecureRegistries = append(insecureRegistries, reg.Prefix)
+		}
+	}
+	return insecureRegistries, nil
 }

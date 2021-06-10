@@ -94,7 +94,7 @@ const (
 	// StdinOnce is the stdin_once annotation
 	StdinOnce = "io.kubernetes.cri-o.StdinOnce"
 
-	// Volumes is the volumes annotatoin
+	// Volumes is the volumes annotation
 	Volumes = "io.kubernetes.cri-o.Volumes"
 
 	// HostNetwork indicates whether the host network namespace is used or not
@@ -102,6 +102,10 @@ const (
 
 	// CNIResult is the JSON string representation of the Result from CNI
 	CNIResult = "io.kubernetes.cri-o.CNIResult"
+
+	// ContainerManager is the annotation key for indicating the creator and
+	// manager of the container
+	ContainerManager = "io.container.manager"
 )
 
 // ContainerType values
@@ -112,3 +116,7 @@ const (
 	// ContainerTypeContainer represents a container running within a pod
 	ContainerTypeContainer = "container"
 )
+
+// ContainerManagerLibpod indicates that libpod created and manages the
+// container
+const ContainerManagerLibpod = "libpod"

@@ -27,19 +27,13 @@ LAST_TAG=$(git describe --tags --abbrev=0)
 write_go_version()
 {
 	LOCAL_VERSION="$1"
-	sed -i "s/^\(const Version = \"\).*/\1${LOCAL_VERSION}\"/" version/version.go
+	sed -i "s/^\(var Version = semver.MustParse( *\"\).*/\1${LOCAL_VERSION}\")/" version/version.go
 }
 
 write_spec_version()
 {
 	LOCAL_VERSION="$1"
 	sed -i "s/^\(Version: *\).*/\1${LOCAL_VERSION}/" contrib/spec/podman.spec.in
-}
-
-write_makefile_epoch()
-{
-	LOCAL_EPOCH="$1"
-	sed -i "s/^\(EPOCH_TEST_COMMIT ?= \).*/\1${LOCAL_EPOCH}/" Makefile
 }
 
 write_changelog()
@@ -66,17 +60,8 @@ dev_version_commit()
 	git commit -asm "Bump to v${NEXT_VERSION}-dev"
 }
 
-epoch_commit()
-{
-	LOCAL_EPOCH="$1"
-	write_makefile_epoch "${LOCAL_EPOCH}" &&
-	git commit -asm 'Bump gitvalidation epoch'
-}
-
 git fetch origin &&
 git checkout -b "bump-${VERSION}" origin/master &&
-EPOCH=$(git rev-parse HEAD) &&
 release_commit &&
 git tag -s -m "version ${VERSION}" "v${VERSION}" &&
-dev_version_commit &&
-epoch_commit "${EPOCH}"
+dev_version_commit

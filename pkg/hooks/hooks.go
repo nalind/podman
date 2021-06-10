@@ -4,12 +4,12 @@ package hooks
 import (
 	"context"
 	"fmt"
-	"path/filepath"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 
-	current "github.com/containers/libpod/pkg/hooks/1.0.0"
+	current "github.com/containers/podman/v3/pkg/hooks/1.0.0"
 	rspec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -46,7 +46,7 @@ type namedHook struct {
 //
 // extensionStages allows callers to add additional stages beyond
 // those specified in the OCI Runtime Specification and to control
-// OCI-defined stages instead of delagating to the OCI runtime.  See
+// OCI-defined stages instead of delegating to the OCI runtime.  See
 // Hooks() for more information.
 func New(ctx context.Context, directories []string, extensionStages []string) (manager *Manager, err error) {
 	manager = &Manager{
@@ -57,7 +57,7 @@ func New(ctx context.Context, directories []string, extensionStages []string) (m
 
 	for _, dir := range directories {
 		err = ReadDir(dir, manager.extensionStages, manager.hooks)
-		if err != nil {
+		if err != nil && !os.IsNotExist(err) {
 			return nil, err
 		}
 	}
@@ -120,12 +120,18 @@ func (m *Manager) Hooks(config *rspec.Spec, annotations map[string]string, hasBi
 					extensionStageHooks[stage] = append(extensionStageHooks[stage], namedHook.hook.Hook)
 				} else {
 					switch stage {
+					case "createContainer":
+						config.Hooks.CreateContainer = append(config.Hooks.CreateContainer, namedHook.hook.Hook)
+					case "createRuntime":
+						config.Hooks.CreateRuntime = append(config.Hooks.CreateRuntime, namedHook.hook.Hook)
 					case "prestart":
 						config.Hooks.Prestart = append(config.Hooks.Prestart, namedHook.hook.Hook)
 					case "poststart":
 						config.Hooks.Poststart = append(config.Hooks.Poststart, namedHook.hook.Hook)
 					case "poststop":
 						config.Hooks.Poststop = append(config.Hooks.Poststop, namedHook.hook.Hook)
+					case "startContainer":
+						config.Hooks.StartContainer = append(config.Hooks.StartContainer, namedHook.hook.Hook)
 					default:
 						return extensionStageHooks, fmt.Errorf("hook %q: unknown stage %q", namedHook.name, stage)
 					}
@@ -137,27 +143,4 @@ func (m *Manager) Hooks(config *rspec.Spec, annotations map[string]string, hasBi
 	}
 
 	return extensionStageHooks, nil
-}
-
-// remove remove a hook by name.
-func (m *Manager) remove(hook string) (ok bool) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	_, ok = m.hooks[hook]
-	if ok {
-		delete(m.hooks, hook)
-	}
-	return ok
-}
-
-// add adds a hook by path
-func (m *Manager) add(path string) (err error) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	hook, err := Read(path, m.extensionStages)
-	if err != nil {
-		return err
-	}
-	m.hooks[filepath.Base(path)] = hook
-	return nil
 }

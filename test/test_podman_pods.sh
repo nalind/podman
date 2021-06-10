@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # test_podman_pods.sh
 # A script to be run at the command line with Podman installed.
 # This should be run against a new kit to provide base level testing
@@ -39,13 +39,13 @@ fi
 
 
 ########
-# Create a named and unamed pod
+# Create a named and unnamed pod
 ########
 podman pod create --name foobar
 podid=$(podman pod create)
 
 ########
-# Delete a named and unamed pod
+# Delete a named and unnamed pod
 ########
 podman pod rm foobar
 podman pod rm $podid

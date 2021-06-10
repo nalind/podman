@@ -1,18 +1,28 @@
 approvers:
-  - mheon
   - baude
-  - mrunalp
+  - edsantiago
+  - giuseppe
+  - jwhonce
+  - Luap99
+  - mheon
   - rhatdan
+  - saschagrunert
   - TomSweeneyRedHat
   - umohnani8
-  - giuseppe
   - vrothberg
+  - zhangguanzhang
 reviewers:
-  - mheon
+  - ashley-cui
   - baude
-  - mrunalp
+  - edsantiago
+  - giuseppe
+  - jwhonce
+  - Luap99
+  - mheon
+  - QiWang19
   - rhatdan
+  - saschagrunert
   - TomSweeneyRedHat
   - umohnani8
-  - giuseppe
   - vrothberg
+  - zhangguanzhang

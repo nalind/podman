@@ -1,11 +1,14 @@
 package integration
 
 import (
+	"fmt"
 	"os"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
+	"github.com/containers/podman/v3/version"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega/gexec"
 )
 
 var _ = Describe("Podman version", func() {
@@ -27,33 +30,70 @@ var _ = Describe("Podman version", func() {
 		podmanTest.Cleanup()
 		f := CurrentGinkgoTestDescription()
 		processTestResult(f)
+		podmanTest.SeedImages()
 
 	})
 
 	It("podman version", func() {
 		session := podmanTest.Podman([]string{"version"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Equal(0))
-		Expect(len(session.OutputToStringArray())).To(BeNumerically(">", 2))
+		Expect(session).Should(Exit(0))
+		Expect(session.Out.Contents()).Should(ContainSubstring(version.Version.String()))
+	})
+
+	It("podman -v", func() {
+		session := podmanTest.Podman([]string{"-v"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+		Expect(session.Out.Contents()).Should(ContainSubstring(version.Version.String()))
+	})
+
+	It("podman --version", func() {
+		session := podmanTest.Podman([]string{"--version"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+		Expect(session.Out.Contents()).Should(ContainSubstring(version.Version.String()))
 	})
 
 	It("podman version --format json", func() {
-		session := podmanTest.Podman([]string{"version", "--format", "json"})
-		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Equal(0))
-		Expect(session.IsJSONOutputValid()).To(BeTrue())
-	})
+		tests := []struct {
+			input    string
+			success  bool
+			exitCode int
+		}{
+			{"json", true, 0},
+			{" json", true, 0},
+			{"json ", true, 0},
+			{"  json   ", true, 0},
+			{"{{json .}}", true, 0},
+			{"{{ json .}}", true, 0},
+			{"{{json .   }}", true, 0},
+			{"  {{  json .    }}   ", true, 0},
+			{"{{json }}", true, 0},
+			{"{{json .", false, 125},
+			{"json . }}", false, 0}, // without opening {{ template seen as string literal
+		}
+		for _, tt := range tests {
+			session := podmanTest.Podman([]string{"version", "--format", tt.input})
+			session.WaitWithDefaultTimeout()
 
-	It("podman version --format json", func() {
-		session := podmanTest.Podman([]string{"version", "--format", "{{ json .}}"})
-		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Equal(0))
-		Expect(session.IsJSONOutputValid()).To(BeTrue())
+			desc := fmt.Sprintf("JSON test(%q)", tt.input)
+			Expect(session).Should(Exit(tt.exitCode), desc)
+			Expect(session.IsJSONOutputValid()).To(Equal(tt.success), desc)
+		}
 	})
 
 	It("podman version --format GO template", func() {
-		session := podmanTest.Podman([]string{"version", "--format", "{{ .Version }}"})
+		session := podmanTest.Podman([]string{"version", "--format", "{{ .Client.Version }}"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Equal(0))
+		Expect(session).Should(Exit(0))
+
+		session = podmanTest.Podman([]string{"version", "--format", "{{ .Server.Version }}"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
+
+		session = podmanTest.Podman([]string{"version", "--format", "{{ .Version }}"})
+		session.WaitWithDefaultTimeout()
+		Expect(session).Should(Exit(0))
 	})
 })

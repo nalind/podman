@@ -1,12 +1,10 @@
-// +build !remoteclient
-
 package integration
 
 import (
 	"os"
 	"time"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -25,7 +23,7 @@ var _ = Describe("Podman restart", func() {
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.RestoreAllArtifacts()
+		podmanTest.SeedImages()
 	})
 
 	AfterEach(func() {
@@ -56,7 +54,7 @@ var _ = Describe("Podman restart", func() {
 	})
 
 	It("Podman restart stopped container by ID", func() {
-		session := podmanTest.Podman([]string{"create", "-d", ALPINE, "ls"})
+		session := podmanTest.Podman([]string{"create", ALPINE, "ls"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 		cid := session.OutputToString()
@@ -133,7 +131,11 @@ var _ = Describe("Podman restart", func() {
 		startTime := podmanTest.Podman([]string{"inspect", "--format='{{.State.StartedAt}}'", "test1", "test2"})
 		startTime.WaitWithDefaultTimeout()
 
-		session := podmanTest.Podman([]string{"restart", "-l"})
+		cid := "-l"
+		if IsRemote() {
+			cid = "test2"
+		}
+		session := podmanTest.Podman([]string{"restart", cid})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 		restartTime := podmanTest.Podman([]string{"inspect", "--format='{{.State.StartedAt}}'", "test1", "test2"})
@@ -193,5 +195,56 @@ var _ = Describe("Podman restart", func() {
 		restartTime.WaitWithDefaultTimeout()
 		Expect(restartTime.OutputToStringArray()[0]).To(Equal(startTime.OutputToStringArray()[0]))
 		Expect(restartTime.OutputToStringArray()[1]).To(Not(Equal(startTime.OutputToStringArray()[1])))
+	})
+
+	It("Podman restart a container in a pod and hosts should not duplicated", func() {
+		// Fixes: https://github.com/containers/podman/issues/8921
+
+		_, ec, _ := podmanTest.CreatePod(map[string][]string{"--name": {"foobar99"}})
+		Expect(ec).To(Equal(0))
+
+		session := podmanTest.RunTopContainerInPod("host-restart-test", "foobar99")
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+
+		testCmd := []string{"exec", "host-restart-test", "sh", "-c", "wc -l < /etc/hosts"}
+
+		// before restart
+		beforeRestart := podmanTest.Podman(testCmd)
+		beforeRestart.WaitWithDefaultTimeout()
+		Expect(beforeRestart.ExitCode()).To(Equal(0))
+
+		session = podmanTest.Podman([]string{"restart", "host-restart-test"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+
+		afterRestart := podmanTest.Podman(testCmd)
+		afterRestart.WaitWithDefaultTimeout()
+		Expect(afterRestart.ExitCode()).To(Equal(0))
+
+		// line count should be equal
+		Expect(beforeRestart.OutputToString()).To(Equal(afterRestart.OutputToString()))
+	})
+
+	It("podman restart --all", func() {
+		session := podmanTest.RunTopContainer("")
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(1))
+
+		session = podmanTest.RunTopContainer("")
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(2))
+
+		session = podmanTest.Podman([]string{"stop", "--all"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(0))
+
+		session = podmanTest.Podman([]string{"restart", "--all"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(podmanTest.NumberOfContainersRunning()).To(Equal(2))
 	})
 })

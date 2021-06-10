@@ -1,239 +1,70 @@
-#!/bin/bash
+#!/usr/bin/env bash
+
+#
+# For help and usage information, simply execute the script w/o any arguments.
+#
+# This script is intended to be run by Red Hat podman developers who need
+# to debug problems specifically related to Cirrus-CI automated testing.
+# It requires that you have been granted prior access to create VMs in
+# google-cloud.  For non-Red Hat contributors, VMs are available as-needed,
+# with supervision upon request.
 
 set -e
 
-RED="\e[1;36;41m"
-YEL="\e[1;33;44m"
-NOR="\e[0m"
-USAGE_WARNING="
-${YEL}WARNING: This will not work without local sudo access to run podman,${NOR}
-         ${YEL}and prior authorization to use the libpod GCP project. Also,${NOR}
-         ${YEL}possession of the proper ssh private key is required.${NOR}
-"
-# TODO: Many/most of these values should come from .cirrus.yml
-ZONE="us-central1-a"
-CPUS="2"
-MEMORY="4Gb"
-DISK="200"
-PROJECT="libpod-218412"
-GOSRC="/var/tmp/go/src/github.com/containers/libpod"
-GCLOUD_IMAGE=${GCLOUD_IMAGE:-quay.io/cevich/gcloud_centos:latest}
-GCLOUD_SUDO=${GCLOUD_SUDO-sudo}
-ROOTLESS_USER="madcowdog"
+SCRIPT_FILEPATH=$(realpath "${BASH_SOURCE[0]}")
+SCRIPT_DIRPATH=$(dirname "$SCRIPT_FILEPATH")
+REPO_DIRPATH=$(realpath "$SCRIPT_DIRPATH/../")
 
-# Shared tmp directory between container and us
-TMPDIR=$(mktemp -d --tmpdir $(basename $0)_tmpdir_XXXXXX)
-
-LIBPODROOT=$(realpath "$(dirname $0)/../")
-# else: Assume $PWD is the root of the libpod repository
-[[ "$LIBPODROOT" != "/" ]] || LIBPODROOT=$PWD
-
-# Command shortcuts save some typing (asumes $LIBPODROOT is subdir of $HOME)
-PGCLOUD="$GCLOUD_SUDO podman run -it --rm -e AS_ID=$UID -e AS_USER=$USER --security-opt label=disable -v $TMPDIR:$HOME -v $HOME/.config/gcloud:$HOME/.config/gcloud -v $HOME/.config/gcloud/ssh:$HOME/.ssh -v $LIBPODROOT:$LIBPODROOT $GCLOUD_IMAGE --configuration=libpod --project=$PROJECT"
-SCP_CMD="$PGCLOUD compute scp"
-
-
-showrun() {
-    if [[ "$1" == "--background" ]]
-    then
-        shift
-        # Properly escape any nested spaces, so command can be copy-pasted
-        echo '+ '$(printf " %q" "$@")' &' > /dev/stderr
-        "$@" &
-        echo -e "${RED}<backgrounded>${NOR}"
-    else
-        echo '+ '$(printf " %q" "$@") > /dev/stderr
-        "$@"
+# Help detect if we were called by get_ci_vm container
+GET_CI_VM="${GET_CI_VM:-0}"
+in_get_ci_vm() {
+    if ((GET_CI_VM==0)); then
+        echo "Error: $1 is not intended for use in this context"
+        exit 2
     fi
 }
 
-cleanup() {
-    set +e
-    wait
-
-    # set GCLOUD_DEBUG to leave tmpdir behind for postmortem
-    test -z "$GCLOUD_DEBUG" && rm -rf $TMPDIR
-}
-trap cleanup EXIT
-
-delvm() {
-    echo -e "\n"
-    echo -e "\n${YEL}Offering to Delete $VMNAME ${RED}(Might take a minute or two)${NOR}"
-    echo -e "\n${YEL}Note: It's safe to answer N, then re-run script again later.${NOR}"
-    showrun $CLEANUP_CMD  # prompts for Yes/No
-    cleanup
-}
-
-image_hints() {
-    egrep '[[:space:]]+[[:alnum:]].+_CACHE_IMAGE_NAME:[[:space:]+"[[:print:]]+"' \
-        "$LIBPODROOT/.cirrus.yml" | cut -d: -f 2 | tr -d '"[:blank:]' | \
-        grep -v 'notready' | grep -v 'image-builder' | sort -u
-}
-
-show_usage() {
-    echo -e "\n${RED}ERROR: $1${NOR}"
-    echo -e "${YEL}Usage: $(basename $0) [-s | -p | -r] <image_name>${NOR}"
-    echo "Use -s / -p to select source or package based dependencies"
-    echo -e "Use -r to setup and run tests as a regular user.\n"
-    if [[ -r ".cirrus.yml" ]]
-    then
-        echo -e "${YEL}Some possible image_name values (from .cirrus.yml):${NOR}"
-        image_hints
-        echo ""
-    fi
-    exit 1
-}
-
-get_env_vars() {
-    python -c '
-import yaml
-env=yaml.load(open(".cirrus.yml"))["env"]
-keys=[k for k in env if "ENCRYPTED" not in str(env[k])]
-for k,v in env.items():
-    v=str(v)
-    if "ENCRYPTED" not in v:
-        print "{0}=\"{1}\"".format(k, v),
-    '
-}
-
-parse_args(){
-    echo -e "$USAGE_WARNING"
-
-    if [[ -z "$1" ]]
-    then
-        show_usage "Must specify at least one command-line parameter."
-    elif [[ "$1" == "-p" ]]
-    then
-        echo -e "${YEL}Hint: Use -p for package-based dependencies or -s for source-based.${NOR}"
-        DEPS="PACKAGE_DEPS=true SOURCE_DEPS=false"
-        IMAGE_NAME="$2"
-
-    elif [[ "$1" == "-s" ]]
-    then
-        echo -e "${RED}Using source-based dependencies.${NOR}"
-        DEPS="PACKAGE_DEPS=false SOURCE_DEPS=true"
-        IMAGE_NAME="$2"
-    elif [[ "$1" == "-r" ]]
-    then
-        DEPS="ROOTLESS_USER=$ROOTLESS_USER"
-        IMAGE_NAME="$2"
-    else  # no -s or -p
-        echo -e "${RED}Using package-based dependencies.${NOR}"
-        DEPS="$(get_env_vars)"
-        IMAGE_NAME="$1"
-    fi
-
-    if [[ -z "$IMAGE_NAME" ]]
-    then
-        show_usage "No image-name specified."
-    fi
-
-    if [[ "$USER" =~ "root" ]]
-    then
-        show_usage "This script must be run as a regular user."
-    fi
-
-    SETUP_CMD="env $DEPS $GOSRC/contrib/cirrus/setup_environment.sh"
-    VMNAME="${VMNAME:-${USER}-${IMAGE_NAME}}"
-    CREATE_CMD="$PGCLOUD compute instances create --zone=$ZONE --image=${IMAGE_NAME} --custom-cpu=$CPUS --custom-memory=$MEMORY --boot-disk-size=$DISK --labels=in-use-by=$USER $VMNAME"
-    SSH_CMD="$PGCLOUD compute ssh root@$VMNAME"
-    CLEANUP_CMD="$PGCLOUD compute instances delete --zone $ZONE --delete-disks=all $VMNAME"
-}
-
-##### main
-
-[[ "${LIBPODROOT%%${LIBPODROOT##$HOME}}" == "$HOME" ]] || \
-    show_usage "Repo clone must be sub-dir of $HOME"
-
-cd "$LIBPODROOT"
-
-parse_args $@
-
-# Ensure mount-points and data directories exist on host as $USER.  Also prevents
-# permission-denied errors during cleanup() b/c `sudo podman` created mount-points
-# owned by root.
-mkdir -p $TMPDIR/${LIBPODROOT##$HOME}
-mkdir -p $TMPDIR/.ssh
-mkdir -p {$HOME,$TMPDIR}/.config/gcloud/ssh
-chmod 700 {$HOME,$TMPDIR}/.config/gcloud/ssh $TMPDIR/.ssh
-
-cd $LIBPODROOT
-
-# Attempt to determine if named 'libpod' gcloud configuration exists
-showrun $PGCLOUD info > $TMPDIR/gcloud-info
-if egrep -q "Account:.*None" $TMPDIR/gcloud-info
-then
-    echo -e "\n${YEL}WARNING: Can't find gcloud configuration for libpod, running init.${NOR}"
-    echo -e "         ${RED}Please choose "#1: Re-initialize" and "login" if asked.${NOR}"
-    showrun $PGCLOUD init --project=$PROJECT --console-only --skip-diagnostics
-
-    # Verify it worked (account name == someone@example.com)
-    $PGCLOUD info > $TMPDIR/gcloud-info-after-init
-    if egrep -q "Account:.*None" $TMPDIR/gcloud-info-after-init
-    then
-        echo -e "${RED}ERROR: Could not initialize libpod configuration in gcloud.${NOR}"
-        exit 5
-    fi
-
-    # If this is the only config, make it the default to avoid persistent warnings from gcloud
-    [[ -r "$HOME/.config/gcloud/configurations/config_default" ]] || \
-        ln "$HOME/.config/gcloud/configurations/config_libpod" \
-           "$HOME/.config/gcloud/configurations/config_default"
+# get_ci_vm APIv1 container entrypoint calls into this script
+# to obtain required repo. specific configuration options.
+if [[ "$1" == "--config" ]]; then
+    in_get_ci_vm "$1"
+    cat <<EOF
+DESTDIR="/var/tmp/go/src/github.com/containers/podman"
+UPSTREAM_REPO="https://github.com/containers/podman.git"
+CI_ENVFILE="/etc/ci_environment"
+GCLOUD_PROJECT="libpod-218412"
+GCLOUD_IMGPROJECT="libpod-218412"
+GCLOUD_CFG="libpod"
+GCLOUD_ZONE="${GCLOUD_ZONE:-us-central1-a}"
+GCLOUD_CPUS="2"
+GCLOUD_MEMORY="4Gb"
+GCLOUD_DISK="200"
+EOF
+elif [[ "$1" == "--setup" ]]; then
+    in_get_ci_vm "$1"
+    # get_ci_vm container entrypoint calls us with this option on the
+    # Cirrus-CI environment instance, to perform repo.-specific setup.
+    cd $REPO_DIRPATH
+    echo "+ Loading ./contrib/cirrus/lib.sh" > /dev/stderr
+    source ./contrib/cirrus/lib.sh
+    echo "+ Mimicking .cirrus.yml clone_script and build_task" > /dev/stderr
+    make install.tools
+    make vendor
+    make podman
+    make podman-remote
+    echo "+ Running environment setup" > /dev/stderr
+    ./contrib/cirrus/setup_environment.sh
+else
+    # Create and access VM for specified Cirrus-CI task
+    mkdir -p $HOME/.config/gcloud/ssh
+    podman run -it --rm \
+        --tz=local \
+        -e NAME="$USER" \
+        -e SRCDIR=/src \
+        -e GCLOUD_ZONE="$GCLOUD_ZONE" \
+        -e DEBUG="${DEBUG:-0}" \
+        -v $REPO_DIRPATH:/src:O \
+        -v $HOME/.config/gcloud:/root/.config/gcloud:z \
+        -v $HOME/.config/gcloud/ssh:/root/.ssh:z \
+        quay.io/libpod/get_ci_vm:latest "$@"
 fi
-
-# Couldn't make rsync work with gcloud's ssh wrapper :(
-TARBALL=$VMNAME.tar.bz2
-echo -e "\n${YEL}Packing up repository into a tarball $VMNAME.${NOR}"
-showrun --background tar cjf $TMPDIR/$TARBALL --warning=no-file-changed -C $LIBPODROOT .
-
-trap delvm INT  # Allow deleting VM if CTRL-C during create
-# This fails if VM already exists: permit this usage to re-init
-echo -e "\n${YEL}Trying to creating a VM named $VMNAME ${RED}(might take a minute/two.  Errors ignored).${NOR}"
-showrun $CREATE_CMD || true # allow re-running commands below when "delete: N"
-
-# Any subsequent failure should prompt for VM deletion
-trap delvm EXIT
-
-echo -e "\n${YEL}Waiting up to 30s for ssh port to open${NOR}"
-trap 'COUNT=9999' INT
-ATTEMPTS=10
-for (( COUNT=1 ; COUNT <= $ATTEMPTS ; COUNT++ ))
-do
-    if $SSH_CMD --command "true"; then break; else sleep 3s; fi
-done
-if (( COUNT > $ATTEMPTS ))
-then
-    echo -e "\n${RED}Failed${NOR}"
-    exit 7
-fi
-echo -e "${YEL}Got it${NOR}"
-
-if $SSH_CMD --command "test -r /root/.bash_profile_original"
-then
-    echo -e "\n${YEL}Resetting environment configuration${NOR}"
-    showrun $SSH_CMD --command "cp /root/.bash_profile_original /root/.bash_profile"
-fi
-
-echo -e "\n${YEL}Removing and re-creating $GOSRC on $VMNAME.${NOR}"
-showrun $SSH_CMD --command "rm -rf $GOSRC"
-showrun $SSH_CMD --command "mkdir -p $GOSRC"
-
-echo -e "\n${YEL}Transfering tarball to $VMNAME.${NOR}"
-wait
-showrun $SCP_CMD $HOME/$TARBALL root@$VMNAME:/tmp/$TARBALL
-
-echo -e "\n${YEL}Unpacking tarball into $GOSRC on $VMNAME.${NOR}"
-showrun $SSH_CMD --command "tar xjf /tmp/$TARBALL -C $GOSRC"
-
-echo -e "\n${YEL}Removing tarball on $VMNAME.${NOR}"
-showrun $SSH_CMD --command "rm -f /tmp/$TARBALL"
-
-echo -e "\n${YEL}Executing environment setup${NOR}"
-showrun $SSH_CMD --command "$SETUP_CMD"
-
-echo -e "\n${YEL}Connecting to $VMNAME ${RED}(option to delete VM upon logout).${NOR}\n"
-if [[ "$1" == "-r" ]]
-then
-    SSH_CMD="$PGCLOUD compute ssh $ROOTLESS_USER@$VMNAME"
-fi
-showrun $SSH_CMD -- -t "cd $GOSRC && exec env $DEPS bash -il"

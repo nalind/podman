@@ -15,7 +15,7 @@ CI configuration file.](../../.cirrus.yml)
 
 # Execution
 
-When working from a clone of [the libpod repository](https://github.com/containers/libpod),
+When working from a clone of [the libpod repository](https://github.com/containers/podman),
 the main entry-point for humans and automation is `make localsystem`.  When operating
 from a packaged version of the system-tests, the entry-point may vary as appropriate.
 Running the packaged system-tests assumes the version of Podman matches the test
@@ -70,7 +70,7 @@ have been omitted as they are verified by repeated implied use.
 - [ ] Container runlabel, exists, checkpoint, exists, restore, stop, prune
 
   - Using pre-existing remote image, start it with 'podman container runlabel --pull'
-  - Run a named container that exits immediatly
+  - Run a named container that exits immediately
   - Confirm 'container exists' zero exit (both containers)
   - Checkpoint the running container
   - Confirm 'container exists' non-zero exit (runlabel container)

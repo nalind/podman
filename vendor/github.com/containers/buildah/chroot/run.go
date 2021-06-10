@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,14 +16,16 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/containers/buildah/bind"
-	"github.com/containers/buildah/unshare"
+	"github.com/containers/buildah/copier"
 	"github.com/containers/buildah/util"
 	"github.com/containers/storage/pkg/ioutils"
 	"github.com/containers/storage/pkg/mount"
 	"github.com/containers/storage/pkg/reexec"
+	"github.com/containers/storage/pkg/unshare"
 	"github.com/opencontainers/runc/libcontainer/apparmor"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
@@ -84,9 +87,18 @@ type runUsingChrootExecSubprocOptions struct {
 // RunUsingChroot runs a chrooted process, using some of the settings from the
 // passed-in spec, and using the specified bundlePath to hold temporary files,
 // directories, and mountpoints.
-func RunUsingChroot(spec *specs.Spec, bundlePath string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
+func RunUsingChroot(spec *specs.Spec, bundlePath, homeDir string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	var confwg sync.WaitGroup
-
+	var homeFound bool
+	for _, env := range spec.Process.Env {
+		if strings.HasPrefix(env, "HOME=") {
+			homeFound = true
+			break
+		}
+	}
+	if !homeFound {
+		spec.Process.Env = append(spec.Process.Env, fmt.Sprintf("HOME=%s", homeDir))
+	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -195,14 +207,19 @@ func runUsingChrootMain() {
 		os.Exit(1)
 	}
 
+	if options.Spec == nil {
+		fmt.Fprintf(os.Stderr, "invalid options spec in runUsingChrootMain\n")
+		os.Exit(1)
+	}
+
 	// Prepare to shuttle stdio back and forth.
-	rootUid32, rootGid32, err := util.GetHostRootIDs(options.Spec)
+	rootUID32, rootGID32, err := util.GetHostRootIDs(options.Spec)
 	if err != nil {
 		logrus.Errorf("error determining ownership for container stdio")
 		os.Exit(1)
 	}
-	rootUid := int(rootUid32)
-	rootGid := int(rootGid32)
+	rootUID := int(rootUID32)
+	rootGID := int(rootGID32)
 	relays := make(map[int]int)
 	closeOnceRunning := []*os.File{}
 	var ctty *os.File
@@ -211,7 +228,6 @@ func runUsingChrootMain() {
 	var stdout io.Writer
 	var stderr io.Writer
 	fdDesc := make(map[int]string)
-	deferred := func() {}
 	if options.Spec.Process.Terminal {
 		// Create a pseudo-terminal -- open a copy of the master side.
 		ptyMasterFd, err := unix.Open("/dev/ptmx", os.O_RDWR, 0600)
@@ -280,7 +296,7 @@ func runUsingChrootMain() {
 		// Open an *os.File object that we can pass to our child.
 		ctty = os.NewFile(ptyFd, "/dev/tty")
 		// Set ownership for the PTY.
-		if err = ctty.Chown(rootUid, rootGid); err != nil {
+		if err = ctty.Chown(rootUID, rootGID); err != nil {
 			var cttyInfo unix.Stat_t
 			err2 := unix.Fstat(int(ptyFd), &cttyInfo)
 			from := ""
@@ -289,7 +305,7 @@ func runUsingChrootMain() {
 				op = "changing"
 				from = fmt.Sprintf("from %d/%d ", cttyInfo.Uid, cttyInfo.Gid)
 			}
-			logrus.Warnf("error %s ownership of container PTY %sto %d/%d: %v", op, from, rootUid, rootGid, err)
+			logrus.Warnf("error %s ownership of container PTY %sto %d/%d: %v", op, from, rootUID, rootGID, err)
 		}
 		// Set permissions on the PTY.
 		if err = ctty.Chmod(0620); err != nil {
@@ -328,15 +344,15 @@ func runUsingChrootMain() {
 		fdDesc[unix.Stdout] = "stdout"
 		fdDesc[unix.Stderr] = "stderr"
 		// Set ownership for the pipes.
-		if err = stdinRead.Chown(rootUid, rootGid); err != nil {
+		if err = stdinRead.Chown(rootUID, rootGID); err != nil {
 			logrus.Errorf("error setting ownership of container stdin pipe: %v", err)
 			os.Exit(1)
 		}
-		if err = stdoutWrite.Chown(rootUid, rootGid); err != nil {
+		if err = stdoutWrite.Chown(rootUID, rootGID); err != nil {
 			logrus.Errorf("error setting ownership of container stdout pipe: %v", err)
 			os.Exit(1)
 		}
-		if err = stderrWrite.Chown(rootUid, rootGid); err != nil {
+		if err = stderrWrite.Chown(rootUID, rootGID); err != nil {
 			logrus.Errorf("error setting ownership of container stderr pipe: %v", err)
 			os.Exit(1)
 		}
@@ -361,12 +377,16 @@ func runUsingChrootMain() {
 			return
 		}
 	}
+	if err := unix.SetNonblock(relays[unix.Stdin], true); err != nil {
+		logrus.Errorf("error setting %d to nonblocking: %v", relays[unix.Stdin], err)
+	}
 	go func() {
 		buffers := make(map[int]*bytes.Buffer)
 		for _, writeFd := range relays {
 			buffers[writeFd] = new(bytes.Buffer)
 		}
 		pollTimeout := -1
+		stdinClose := false
 		for len(relays) > 0 {
 			fds := make([]unix.PollFd, 0, len(relays))
 			for fd := range relays {
@@ -386,6 +406,9 @@ func runUsingChrootMain() {
 					removeFds[int(rfd.Fd)] = struct{}{}
 				}
 				if rfd.Revents&unix.POLLIN == 0 {
+					if stdinClose && stdinCopy == nil {
+						continue
+					}
 					continue
 				}
 				b := make([]byte, 8192)
@@ -440,8 +463,19 @@ func runUsingChrootMain() {
 				if buffer.Len() > 0 {
 					pollTimeout = 100
 				}
+				if wfd == relays[unix.Stdin] && stdinClose && buffer.Len() == 0 {
+					stdinCopy.Close()
+					delete(relays, unix.Stdin)
+				}
 			}
 			for rfd := range removeFds {
+				if rfd == unix.Stdin {
+					buffer, found := buffers[relays[unix.Stdin]]
+					if found && buffer.Len() > 0 {
+						stdinClose = true
+						continue
+					}
+				}
 				if !options.Spec.Process.Terminal && rfd == unix.Stdin {
 					stdinCopy.Close()
 				}
@@ -452,7 +486,6 @@ func runUsingChrootMain() {
 
 	// Set up mounts and namespaces, and run the parent subprocess.
 	status, err := runUsingChroot(options.Spec, options.BundlePath, ctty, stdin, stdout, stderr, closeOnceRunning)
-	deferred()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error running subprocess: %v\n", err)
 		os.Exit(1)
@@ -482,7 +515,9 @@ func runUsingChroot(spec *specs.Spec, bundlePath string, ctty *os.File, stdin io
 		return 1, err
 	}
 	defer func() {
-		undoIntermediates()
+		if undoErr := undoIntermediates(); undoErr != nil {
+			logrus.Debugf("error cleaning up intermediate mount NS: %v", err)
+		}
 	}()
 
 	// Bind mount in our filesystems.
@@ -491,7 +526,9 @@ func runUsingChroot(spec *specs.Spec, bundlePath string, ctty *os.File, stdin io
 		return 1, err
 	}
 	defer func() {
-		undoChroots()
+		if undoErr := undoChroots(); undoErr != nil {
+			logrus.Debugf("error cleaning up intermediate chroot bind mounts: %v", err)
+		}
 	}()
 
 	// Create a pipe for passing configuration down to the next process.
@@ -512,7 +549,7 @@ func runUsingChroot(spec *specs.Spec, bundlePath string, ctty *os.File, stdin io
 	logNamespaceDiagnostics(spec)
 
 	// If we have configured ID mappings, set them here so that they can apply to the child.
-	hostUidmap, hostGidmap, err := util.GetHostIDMappings("")
+	hostUidmap, hostGidmap, err := unshare.GetHostIDMappings("")
 	if err != nil {
 		return 1, err
 	}
@@ -540,7 +577,7 @@ func runUsingChroot(spec *specs.Spec, bundlePath string, ctty *os.File, stdin io
 	cmd.UnshareFlags = syscall.CLONE_NEWUTS | syscall.CLONE_NEWNS
 	requestedUserNS := false
 	for _, ns := range spec.Linux.Namespaces {
-		if ns.Type == specs.LinuxNamespaceType(specs.UserNamespace) {
+		if ns.Type == specs.UserNamespace {
 			requestedUserNS = true
 		}
 	}
@@ -626,6 +663,11 @@ func runUsingChrootExecMain() {
 	// Set the hostname.  We're already in a distinct UTS namespace and are admins in the user
 	// namespace which created it, so we shouldn't get a permissions error, but seccomp policy
 	// might deny our attempt to call sethostname() anyway, so log a debug message for that.
+	if options.Spec == nil {
+		fmt.Fprintf(os.Stderr, "invalid options spec passed in\n")
+		os.Exit(1)
+	}
+
 	if options.Spec.Hostname != "" {
 		if err := unix.Sethostname([]byte(options.Spec.Hostname)); err != nil {
 			logrus.Debugf("failed to set hostname %q for process: %v", options.Spec.Hostname, err)
@@ -711,10 +753,13 @@ func runUsingChrootExecMain() {
 			os.Exit(1)
 		}
 	} else {
-		logrus.Debugf("clearing supplemental groups")
-		if err = syscall.Setgroups([]int{}); err != nil {
-			fmt.Fprintf(os.Stderr, "error clearing supplemental groups list: %v", err)
-			os.Exit(1)
+		setgroups, _ := ioutil.ReadFile("/proc/self/setgroups")
+		if strings.Trim(string(setgroups), "\n") != "deny" {
+			logrus.Debugf("clearing supplemental groups")
+			if err = syscall.Setgroups([]int{}); err != nil {
+				fmt.Fprintf(os.Stderr, "error clearing supplemental groups list: %v", err)
+				os.Exit(1)
+			}
 		}
 	}
 
@@ -954,16 +999,38 @@ func makeReadOnly(mntpoint string, flags uintptr) error {
 	return nil
 }
 
+func isDevNull(dev os.FileInfo) bool {
+	if dev.Mode()&os.ModeCharDevice != 0 {
+		stat, _ := dev.Sys().(*syscall.Stat_t)
+		nullStat := syscall.Stat_t{}
+		if err := syscall.Stat(os.DevNull, &nullStat); err != nil {
+			logrus.Warnf("unable to stat /dev/null: %v", err)
+			return false
+		}
+		if stat.Rdev == nullStat.Rdev {
+			return true
+		}
+	}
+	return false
+}
+
 // setupChrootBindMounts actually bind mounts things under the rootfs, and returns a
 // callback that will clean up its work.
 func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func() error, err error) {
 	var fs unix.Statfs_t
-	removes := []string{}
 	undoBinds = func() error {
-		if err2 := bind.UnmountMountpoints(spec.Root.Path, removes); err2 != nil {
-			logrus.Warnf("pkg/chroot: error unmounting %q: %v", spec.Root.Path, err2)
-			if err == nil {
-				err = err2
+		if err2 := unix.Unmount(spec.Root.Path, unix.MNT_DETACH); err2 != nil {
+			retries := 0
+			for (err2 == unix.EBUSY || err2 == unix.EAGAIN) && retries < 50 {
+				time.Sleep(50 * time.Millisecond)
+				err2 = unix.Unmount(spec.Root.Path, unix.MNT_DETACH)
+				retries++
+			}
+			if err2 != nil {
+				logrus.Warnf("pkg/chroot: error unmounting %q (retried %d times): %v", spec.Root.Path, retries, err2)
+				if err == nil {
+					err = err2
+				}
 			}
 		}
 		return err
@@ -981,7 +1048,7 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 	subDev := filepath.Join(spec.Root.Path, "/dev")
 	if err := unix.Mount("/dev", subDev, "bind", devFlags, ""); err != nil {
 		if os.IsNotExist(err) {
-			err = os.Mkdir(subDev, 0700)
+			err = os.Mkdir(subDev, 0755)
 			if err == nil {
 				err = unix.Mount("/dev", subDev, "bind", devFlags, "")
 			}
@@ -1005,7 +1072,7 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 	subProc := filepath.Join(spec.Root.Path, "/proc")
 	if err := unix.Mount("/proc", subProc, "bind", procFlags, ""); err != nil {
 		if os.IsNotExist(err) {
-			err = os.Mkdir(subProc, 0700)
+			err = os.Mkdir(subProc, 0755)
 			if err == nil {
 				err = unix.Mount("/proc", subProc, "bind", procFlags, "")
 			}
@@ -1020,7 +1087,7 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 	subSys := filepath.Join(spec.Root.Path, "/sys")
 	if err := unix.Mount("/sys", subSys, "bind", sysFlags, ""); err != nil {
 		if os.IsNotExist(err) {
-			err = os.Mkdir(subSys, 0700)
+			err = os.Mkdir(subSys, 0755)
 			if err == nil {
 				err = unix.Mount("/sys", subSys, "bind", sysFlags, "")
 			}
@@ -1041,7 +1108,13 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 		}
 		subSys := filepath.Join(spec.Root.Path, m.Mountpoint)
 		if err := unix.Mount(m.Mountpoint, subSys, "bind", sysFlags, ""); err != nil {
-			return undoBinds, errors.Wrapf(err, "error bind mounting /sys from host into mount namespace")
+			msg := fmt.Sprintf("could not bind mount %q, skipping: %v", m.Mountpoint, err)
+			if strings.HasPrefix(m.Mountpoint, "/sys") {
+				logrus.Infof(msg)
+			} else {
+				logrus.Warningf(msg)
+			}
+			continue
 		}
 		if err := makeReadOnly(subSys, sysFlags); err != nil {
 			return undoBinds, err
@@ -1049,9 +1122,6 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 	}
 	logrus.Debugf("bind mounted %q to %q", "/sys", filepath.Join(spec.Root.Path, "/sys"))
 
-	// Add /sys/fs/selinux to the set of masked paths, to ensure that we don't have processes
-	// attempting to interact with labeling, when they aren't allowed to do so.
-	spec.Linux.MaskedPaths = append(spec.Linux.MaskedPaths, "/sys/fs/selinux")
 	// Bind mount in everything we've been asked to mount.
 	for _, m := range spec.Mounts {
 		// Skip anything that we just mounted.
@@ -1071,7 +1141,7 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 			}
 		}
 		// Skip anything that isn't a bind or tmpfs mount.
-		if m.Type != "bind" && m.Type != "tmpfs" {
+		if m.Type != "bind" && m.Type != "tmpfs" && m.Type != "overlay" {
 			logrus.Debugf("skipping mount of type %q on %q", m.Type, m.Destination)
 			continue
 		}
@@ -1083,35 +1153,45 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 			if err != nil {
 				return undoBinds, errors.Wrapf(err, "error examining %q for mounting in mount namespace", m.Source)
 			}
+		case "overlay":
+			fallthrough
 		case "tmpfs":
 			srcinfo, err = os.Stat("/")
 			if err != nil {
-				return undoBinds, errors.Wrapf(err, "error examining / to use as a template for a tmpfs")
+				return undoBinds, errors.Wrapf(err, "error examining / to use as a template for a %s", m.Type)
 			}
 		}
 		target := filepath.Join(spec.Root.Path, m.Destination)
-		if _, err := os.Stat(target); err != nil {
+		// Check if target is a symlink
+		stat, err := os.Lstat(target)
+		// If target is a symlink, follow the link and ensure the destination exists
+		if err == nil && stat != nil && (stat.Mode()&os.ModeSymlink != 0) {
+			target, err = copier.Eval(spec.Root.Path, m.Destination, copier.EvalOptions{})
+			if err != nil {
+				return nil, errors.Wrapf(err, "evaluating symlink %q", target)
+			}
+			// Stat the destination of the evaluated symlink
+			_, err = os.Stat(target)
+		}
+		if err != nil {
 			// If the target can't be stat()ted, check the error.
 			if !os.IsNotExist(err) {
 				return undoBinds, errors.Wrapf(err, "error examining %q for mounting in mount namespace", target)
 			}
-			// The target isn't there yet, so create it, and make a
-			// note to remove it later.
+			// The target isn't there yet, so create it.
 			if srcinfo.IsDir() {
-				if err = os.MkdirAll(target, 0111); err != nil {
+				if err = os.MkdirAll(target, 0755); err != nil {
 					return undoBinds, errors.Wrapf(err, "error creating mountpoint %q in mount namespace", target)
 				}
-				removes = append(removes, target)
 			} else {
-				if err = os.MkdirAll(filepath.Dir(target), 0111); err != nil {
+				if err = os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 					return undoBinds, errors.Wrapf(err, "error ensuring parent of mountpoint %q (%q) is present in mount namespace", target, filepath.Dir(target))
 				}
 				var file *os.File
-				if file, err = os.OpenFile(target, os.O_WRONLY|os.O_CREATE, 0); err != nil {
+				if file, err = os.OpenFile(target, os.O_WRONLY|os.O_CREATE, 0755); err != nil {
 					return undoBinds, errors.Wrapf(err, "error creating mountpoint %q in mount namespace", target)
 				}
 				file.Close()
-				removes = append(removes, target)
 			}
 		}
 		requestFlags := bindFlags
@@ -1135,6 +1215,7 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 		switch m.Type {
 		case "bind":
 			// Do the bind mount.
+			logrus.Debugf("bind mounting %q on %q", m.Destination, filepath.Join(spec.Root.Path, m.Destination))
 			if err := unix.Mount(m.Source, target, "", requestFlags, ""); err != nil {
 				return undoBinds, errors.Wrapf(err, "error bind mounting %q from host to %q in mount namespace (%q)", m.Source, m.Destination, target)
 			}
@@ -1145,6 +1226,12 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 				return undoBinds, errors.Wrapf(err, "error mounting tmpfs to %q in mount namespace (%q, %q)", m.Destination, target, strings.Join(m.Options, ","))
 			}
 			logrus.Debugf("mounted a tmpfs to %q", target)
+		case "overlay":
+			// Mount a overlay.
+			if err := mount.Mount(m.Source, target, m.Type, strings.Join(append(m.Options, "private"), ",")); err != nil {
+				return undoBinds, errors.Wrapf(err, "error mounting overlay to %q in mount namespace (%q, %q)", m.Destination, target, strings.Join(m.Options, ","))
+			}
+			logrus.Debugf("mounted a overlay to %q", target)
 		}
 		if err = unix.Statfs(target, &fs); err != nil {
 			return undoBinds, errors.Wrapf(err, "error checking if directory %q was bound read-only", target)
@@ -1213,7 +1300,6 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 		if err := os.Mkdir(roEmptyDir, 0700); err != nil {
 			return undoBinds, errors.Wrapf(err, "error creating empty directory %q", roEmptyDir)
 		}
-		removes = append(removes, roEmptyDir)
 	}
 
 	// Set up any masked paths that we need to.  If we're running inside of
@@ -1225,11 +1311,6 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 		target, err := filepath.EvalSymlinks(t)
 		if err != nil {
 			target = t
-		}
-		// Get some info about the null device.
-		nullinfo, err := os.Stat(os.DevNull)
-		if err != nil {
-			return undoBinds, errors.Wrapf(err, "error examining %q for masking in mount namespace", os.DevNull)
 		}
 		// Get some info about the target.
 		targetinfo, err := os.Stat(target)
@@ -1248,12 +1329,11 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 			}
 			isReadOnly := statfs.Flags&unix.MS_RDONLY != 0
 			// Check if any of the IDs we're mapping could read it.
-			isAccessible := true
 			var stat unix.Stat_t
 			if err = unix.Stat(target, &stat); err != nil {
 				return undoBinds, errors.Wrapf(err, "error checking permissions on directory %q", target)
 			}
-			isAccessible = false
+			isAccessible := false
 			if stat.Mode&unix.S_IROTH|unix.S_IXOTH != 0 {
 				isAccessible = true
 			}
@@ -1319,8 +1399,8 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 				}
 			}
 		} else {
-			// The target's not a directory, so bind mount os.DevNull over it, unless it's already os.DevNull.
-			if !os.SameFile(nullinfo, targetinfo) {
+			// If the target's is not a directory or os.DevNull, bind mount os.DevNull over it.
+			if !isDevNull(targetinfo) {
 				if err = unix.Mount(os.DevNull, target, "", uintptr(syscall.MS_BIND|syscall.MS_RDONLY|syscall.MS_PRIVATE), ""); err != nil {
 					return undoBinds, errors.Wrapf(err, "error masking non-directory %q in mount namespace", target)
 				}

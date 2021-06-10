@@ -12,9 +12,12 @@ load helpers
     run_podman stop $cid
     t1=$SECONDS
 
-    # Confirm that container is stopped
+    # Confirm that container is stopped. Podman-remote unfortunately
+    # cannot tell the difference between "stopped" and "exited", and
+    # spits them out interchangeably, so we need to recognize either.
     run_podman inspect --format '{{.State.Status}} {{.State.ExitCode}}' $cid
-    is "$output" "exited \+137" "Status and exit code of stopped container"
+    is "$output" "\\(stopped\|exited\\) \+137" \
+       "Status and exit code of stopped container"
 
     # The initial SIGTERM is ignored, so this operation should take
     # exactly 10 seconds. Give it some leeway.
@@ -25,6 +28,49 @@ load helpers
         die "podman stop: took too long ($delta_t seconds; expected ~10)"
 
     run_podman rm $cid
+}
+
+# #9051 : podman stop --all was not working with podman-remote
+@test "podman stop --all" {
+    # Start three containers, create (without running) a fourth
+    run_podman run -d --name c1 $IMAGE sleep 20
+    run_podman run -d --name c2 $IMAGE sleep 40
+    run_podman run -d --name c3 $IMAGE sleep 60
+    run_podman create --name c4 $IMAGE sleep 80
+
+    # podman ps (without -a) should show the three running containers
+    run_podman ps --sort names --format '{{.Names}}--{{.Status}}'
+    is "${#lines[*]}" "3"        "podman ps shows exactly three containers"
+    is "${lines[0]}" "c1--Up.*"  "podman ps shows running container (1)"
+    is "${lines[1]}" "c2--Up.*"  "podman ps shows running container (2)"
+    is "${lines[2]}" "c3--Up.*"  "podman ps shows running container (3)"
+
+    # Stop -a
+    run_podman stop -a -t 1
+
+    # Now podman ps (without -a) should show nothing.
+    run_podman ps --format '{{.Names}}'
+    is "$output" "" "podman ps, after stop -a, shows no running containers"
+
+    # ...but with -a, containers are shown
+    run_podman ps -a --sort names --format '{{.Names}}--{{.Status}}'
+    is "${#lines[*]}" "4"        "podman ps -a shows exactly four containers"
+    is "${lines[0]}" "c1--Exited.*"  "ps -a, first stopped container"
+    is "${lines[1]}" "c2--Exited.*"  "ps -a, second stopped container"
+    is "${lines[2]}" "c3--Exited.*"  "ps -a, third stopped container"
+    is "${lines[3]}" "c4--Created.*" "ps -a, created container (unaffected)"
+}
+
+# #9051 : podman stop --ignore was not working with podman-remote
+@test "podman stop --ignore" {
+    name=thiscontainerdoesnotexist
+    run_podman 125 stop $name
+    is "$output" \
+       "Error: no container with name or ID \"$name\" found: no such container" \
+       "podman stop nonexistent container"
+
+    run_podman stop --ignore $name
+    is "$output" "" "podman stop nonexistent container, with --ignore"
 }
 
 
@@ -62,6 +108,35 @@ load helpers
 
         run_podman rm $cid
     done
+}
+
+# Regression test for #8501
+@test "podman stop - unlock while waiting for timeout" {
+    # Test that the container state transitions to "stopping" and that other
+    # commands can get the container's lock.  To do that, run a container that
+    # ignores SIGTERM such that the Podman would wait 20 seconds for the stop
+    # to finish.  This gives us enough time to try some commands and inspect
+    # the container's status.
+
+    run_podman run --name stopme -d $IMAGE sh -c \
+        "trap 'echo Received SIGTERM, ignoring' SIGTERM; echo READY; while :; do sleep 1; done"
+
+    # Stop the container in the background
+    $PODMAN stop -t 20 stopme &
+
+    # Other commands can acquire the lock
+    run_podman ps -a
+
+    # The container state transitioned to "stopping"
+    run_podman inspect --format '{{.State.Status}}' stopme
+    is "$output" "stopping" "Status of container should be 'stopping'"
+
+    run_podman kill stopme
+    run_podman wait stopme
+
+    # Exit code should be 137 as it was killed
+    run_podman inspect --format '{{.State.ExitCode}}' stopme
+    is "$output" "137" "Exit code of killed container"
 }
 
 # vim: filetype=sh

@@ -3,7 +3,7 @@
 # [Buildah](https://www.youtube.com/embed/YVk5NgSiUw8) - a tool that facilitates building [Open Container Initiative (OCI)](https://www.opencontainers.org/) container images
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/containers/buildah)](https://goreportcard.com/report/github.com/containers/buildah)
-[![Travis](https://travis-ci.org/containers/buildah.svg?branch=master)](https://travis-ci.org/containers/buildah)
+
 
 The Buildah package provides a command line tool that can be used to
 * create a working container, either from scratch or using an image as a starting point
@@ -39,7 +39,7 @@ Buildah and Podman are two complementary open-source projects that are
 available on most Linux platforms and both projects reside at
 [GitHub.com](https://github.com) with Buildah
 [here](https://github.com/containers/buildah) and Podman
-[here](https://github.com/containers/libpod).  Both, Buildah and Podman are
+[here](https://github.com/containers/podman).  Both, Buildah and Podman are
 command line tools that work on Open Container Initiative (OCI) images and
 containers.  The two projects differentiate in their specialization.
 
@@ -55,7 +55,8 @@ into other tools.
 
 Podman specializes in all of the commands and functions that help you to maintain and modify
 OCI images, such as pulling and tagging.  It also allows you to create, run, and maintain those containers
-created from those images.
+created from those images.  For building container images via Dockerfiles, Podman uses Buildah's
+golang API and can be installed independently from Buildah.
 
 A major difference between Podman and Buildah is their concept of a container.  Podman
 allows users to create "traditional containers" where the intent of these containers is
@@ -76,7 +77,7 @@ From [`./examples/lighttpd.sh`](examples/lighttpd.sh):
 
 ```bash
 $ cat > lighttpd.sh <<"EOF"
-#!/bin/bash -x
+#!/usr/bin/env bash -x
 
 ctr1=$(buildah from "${1:-fedora}")
 

@@ -2,11 +2,11 @@ package libpod
 
 import (
 	"context"
-	"strings"
 
-	"github.com/containers/libpod/libpod/events"
+	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v3/libpod/events"
+	"github.com/containers/podman/v3/pkg/domain/entities/reports"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 )
 
 // Contains the public Runtime API for volumes
@@ -26,7 +26,7 @@ func (r *Runtime) RemoveVolume(ctx context.Context, v *Volume, force bool) error
 	defer r.lock.Unlock()
 
 	if !r.valid {
-		return ErrRuntimeStopped
+		return define.ErrRuntimeStopped
 	}
 
 	if !v.valid {
@@ -39,62 +39,38 @@ func (r *Runtime) RemoveVolume(ctx context.Context, v *Volume, force bool) error
 	return r.removeVolume(ctx, v, force)
 }
 
-// RemoveVolumes removes a slice of volumes or all with a force bool
-func (r *Runtime) RemoveVolumes(ctx context.Context, volumes []string, all, force bool) ([]string, error) {
-	var (
-		vols        []*Volume
-		err         error
-		deletedVols []string
-	)
-	if all {
-		vols, err = r.Volumes()
-		if err != nil {
-			return nil, errors.Wrapf(err, "unable to get all volumes")
-		}
-	} else {
-		for _, i := range volumes {
-			vol, err := r.GetVolume(i)
-			if err != nil {
-				return nil, err
-			}
-			vols = append(vols, vol)
-		}
-	}
-
-	for _, vol := range vols {
-		if err := r.RemoveVolume(ctx, vol, force); err != nil {
-			return deletedVols, err
-		}
-		logrus.Debugf("removed volume %s", vol.Name())
-		deletedVols = append(deletedVols, vol.Name())
-	}
-	return deletedVols, nil
-}
-
-// GetVolume retrieves a volume by its name
+// GetVolume retrieves a volume given its full name.
 func (r *Runtime) GetVolume(name string) (*Volume, error) {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
 
 	if !r.valid {
-		return nil, ErrRuntimeStopped
+		return nil, define.ErrRuntimeStopped
 	}
 
 	vol, err := r.state.Volume(name)
-	if err == nil {
-		return vol, err
-	}
-
-	vols, err := r.GetAllVolumes()
 	if err != nil {
 		return nil, err
 	}
-	for _, v := range vols {
-		if strings.HasPrefix(v.Name(), name) {
-			return v, nil
-		}
+
+	return vol, nil
+}
+
+// LookupVolume retrieves a volume by unambiguous partial name.
+func (r *Runtime) LookupVolume(name string) (*Volume, error) {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	if !r.valid {
+		return nil, define.ErrRuntimeStopped
 	}
-	return nil, errors.Errorf("unable to find volume %s", name)
+
+	vol, err := r.state.LookupVolume(name)
+	if err != nil {
+		return nil, err
+	}
+
+	return vol, nil
 }
 
 // HasVolume checks to see if a volume with the given name exists
@@ -103,7 +79,7 @@ func (r *Runtime) HasVolume(name string) (bool, error) {
 	defer r.lock.RUnlock()
 
 	if !r.valid {
-		return false, ErrRuntimeStopped
+		return false, define.ErrRuntimeStopped
 	}
 
 	return r.state.HasVolume(name)
@@ -111,14 +87,14 @@ func (r *Runtime) HasVolume(name string) (bool, error) {
 
 // Volumes retrieves all volumes
 // Filters can be provided which will determine which volumes are included in the
-// output. Multiple filters are handled by ANDing their output, so only volumes
-// matching all filters are returned
+// output. If multiple filters are used, a volume will be returned if
+// any of the filters are matched
 func (r *Runtime) Volumes(filters ...VolumeFilter) ([]*Volume, error) {
 	r.lock.RLock()
 	defer r.lock.RUnlock()
 
 	if !r.valid {
-		return nil, ErrRuntimeStopped
+		return nil, define.ErrRuntimeStopped
 	}
 
 	vols, err := r.state.AllVolumes()
@@ -126,11 +102,15 @@ func (r *Runtime) Volumes(filters ...VolumeFilter) ([]*Volume, error) {
 		return nil, err
 	}
 
+	if len(filters) == 0 {
+		return vols, nil
+	}
+
 	volsFiltered := make([]*Volume, 0, len(vols))
 	for _, vol := range vols {
-		include := true
+		include := false
 		for _, filter := range filters {
-			include = include && filter(vol)
+			include = include || filter(vol)
 		}
 
 		if include {
@@ -147,33 +127,39 @@ func (r *Runtime) GetAllVolumes() ([]*Volume, error) {
 	defer r.lock.RUnlock()
 
 	if !r.valid {
-		return nil, ErrRuntimeStopped
+		return nil, define.ErrRuntimeStopped
 	}
 
 	return r.state.AllVolumes()
 }
 
 // PruneVolumes removes unused volumes from the system
-func (r *Runtime) PruneVolumes(ctx context.Context) ([]string, []error) {
-	var (
-		prunedIDs   []string
-		pruneErrors []error
-	)
-	vols, err := r.GetAllVolumes()
+func (r *Runtime) PruneVolumes(ctx context.Context, filterFuncs []VolumeFilter) ([]*reports.PruneReport, error) {
+	preports := make([]*reports.PruneReport, 0)
+	vols, err := r.Volumes(filterFuncs...)
 	if err != nil {
-		pruneErrors = append(pruneErrors, err)
-		return nil, pruneErrors
+		return nil, err
 	}
 
 	for _, vol := range vols {
-		if err := r.RemoveVolume(ctx, vol, false); err != nil {
-			if errors.Cause(err) != ErrVolumeBeingUsed && errors.Cause(err) != ErrVolumeRemoved {
-				pruneErrors = append(pruneErrors, err)
-			}
-			continue
+		report := new(reports.PruneReport)
+		volSize, err := vol.Size()
+		if err != nil {
+			volSize = 0
 		}
-		vol.newVolumeEvent(events.Prune)
-		prunedIDs = append(prunedIDs, vol.Name())
+		report.Size = volSize
+		report.Id = vol.Name()
+		if err := r.RemoveVolume(ctx, vol, false); err != nil {
+			if errors.Cause(err) != define.ErrVolumeBeingUsed && errors.Cause(err) != define.ErrVolumeRemoved {
+				report.Err = err
+			} else {
+				// We didn't remove the volume for some reason
+				continue
+			}
+		} else {
+			vol.newVolumeEvent(events.Prune)
+		}
+		preports = append(preports, report)
 	}
-	return prunedIDs, pruneErrors
+	return preports, nil
 }

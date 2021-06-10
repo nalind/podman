@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
@@ -32,7 +32,7 @@ func FakePodmanTestCreate() *FakePodmanTest {
 	return p
 }
 
-func (p *FakePodmanTest) makeOptions(args []string) []string {
+func (p *FakePodmanTest) makeOptions(args []string, noEvents, noCache bool) []string {
 	return FakeOutputs[strings.Join(args, " ")]
 }
 

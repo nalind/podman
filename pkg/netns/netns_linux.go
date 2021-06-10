@@ -23,24 +23,49 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 
 	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/containers/podman/v3/pkg/rootless"
+	"github.com/containers/podman/v3/pkg/util"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
-const nsRunDir = "/var/run/netns"
+// GetNSRunDir returns the dir of where to create the netNS. When running
+// rootless, it needs to be at a location writable by user.
+func GetNSRunDir() (string, error) {
+	if rootless.IsRootless() {
+		rootlessDir, err := util.GetRuntimeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(rootlessDir, "netns"), nil
+	}
+	return "/run/netns", nil
+}
 
 // NewNS creates a new persistent (bind-mounted) network namespace and returns
 // an object representing that namespace, without switching to it.
 func NewNS() (ns.NetNS, error) {
-
 	b := make([]byte, 16)
 	_, err := rand.Reader.Read(b)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate random netns name: %v", err)
+	}
+	nsName := fmt.Sprintf("cni-%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+	return NewNSWithName(nsName)
+}
+
+// NewNSWithName creates a new persistent (bind-mounted) network namespace and returns
+// an object representing that namespace, without switching to it.
+func NewNSWithName(name string) (ns.NetNS, error) {
+	nsRunDir, err := GetNSRunDir()
+	if err != nil {
+		return nil, err
 	}
 
 	// Create the directory for mounting network namespaces
@@ -60,7 +85,7 @@ func NewNS() (ns.NetNS, error) {
 			return nil, fmt.Errorf("mount --make-rshared %s failed: %q", nsRunDir, err)
 		}
 
-		// Recursively remount /var/run/netns on itself. The recursive flag is
+		// Recursively remount /run/netns on itself. The recursive flag is
 		// so that any existing netns bindmounts are carried over.
 		err = unix.Mount(nsRunDir, nsRunDir, "none", unix.MS_BIND|unix.MS_REC, "")
 		if err != nil {
@@ -72,23 +97,24 @@ func NewNS() (ns.NetNS, error) {
 		if err != nil {
 			return nil, fmt.Errorf("mount --make-rshared %s failed: %q", nsRunDir, err)
 		}
-
 	}
 
-	nsName := fmt.Sprintf("cni-%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
-
 	// create an empty file at the mount point
-	nsPath := path.Join(nsRunDir, nsName)
+	nsPath := path.Join(nsRunDir, name)
 	mountPointFd, err := os.Create(nsPath)
 	if err != nil {
 		return nil, err
 	}
-	mountPointFd.Close()
+	if err := mountPointFd.Close(); err != nil {
+		return nil, err
+	}
 
 	// Ensure the mount point is cleaned up on errors; if the namespace
 	// was successfully mounted this will have no effect because the file
 	// is in-use
-	defer os.RemoveAll(nsPath)
+	defer func() {
+		_ = os.RemoveAll(nsPath)
+	}()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -102,26 +128,44 @@ func NewNS() (ns.NetNS, error) {
 		// Don't unlock. By not unlocking, golang will kill the OS thread when the
 		// goroutine is done (for go1.10+)
 
+		threadNsPath := getCurrentThreadNetNSPath()
+
 		var origNS ns.NetNS
-		origNS, err = ns.GetNS(getCurrentThreadNetNSPath())
+		origNS, err = ns.GetNS(threadNsPath)
 		if err != nil {
+			logrus.Warnf("cannot open current network namespace %s: %q", threadNsPath, err)
 			return
 		}
-		defer origNS.Close()
+		defer func() {
+			if err := origNS.Close(); err != nil {
+				logrus.Errorf("unable to close namespace: %q", err)
+			}
+		}()
 
 		// create a new netns on the current thread
 		err = unix.Unshare(unix.CLONE_NEWNET)
 		if err != nil {
+			logrus.Warnf("cannot create a new network namespace: %q", err)
 			return
 		}
 
 		// Put this thread back to the orig ns, since it might get reused (pre go1.10)
-		defer origNS.Set()
+		defer func() {
+			if err := origNS.Set(); err != nil {
+				if rootless.IsRootless() && strings.Contains(err.Error(), "operation not permitted") {
+					// When running in rootless mode it will fail to re-join
+					// the network namespace owned by root on the host.
+					return
+				}
+				logrus.Warnf("unable to reset namespace: %q", err)
+			}
+		}()
 
 		// bind mount the netns from the current thread (from /proc) onto the
 		// mount point. This causes the namespace to persist, even when there
-		// are no threads in the ns.
-		err = unix.Mount(getCurrentThreadNetNSPath(), nsPath, "none", unix.MS_BIND, "")
+		// are no threads in the ns. Make this a shared mount; it needs to be
+		// back-propagated to the host
+		err = unix.Mount(threadNsPath, nsPath, "none", unix.MS_BIND|unix.MS_SHARED|unix.MS_REC, "")
 		if err != nil {
 			err = fmt.Errorf("failed to bind mount ns at %s: %v", nsPath, err)
 		}
@@ -137,6 +181,11 @@ func NewNS() (ns.NetNS, error) {
 
 // UnmountNS unmounts the NS held by the netns object
 func UnmountNS(ns ns.NetNS) error {
+	nsRunDir, err := GetNSRunDir()
+	if err != nil {
+		return err
+	}
+
 	nsPath := ns.Path()
 	// Only unmount if it's been bind-mounted (don't touch namespaces in /proc...)
 	if strings.HasPrefix(nsPath, nsRunDir) {

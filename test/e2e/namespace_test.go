@@ -1,11 +1,9 @@
-// +build !remoteclient
-
 package integration
 
 import (
 	"os"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -24,7 +22,7 @@ var _ = Describe("Podman namespaces", func() {
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.RestoreAllArtifacts()
+		podmanTest.SeedImages()
 	})
 
 	AfterEach(func() {
@@ -37,6 +35,12 @@ var _ = Describe("Podman namespaces", func() {
 	It("podman namespace test", func() {
 		podman1 := podmanTest.Podman([]string{"--namespace", "test1", "run", "-d", ALPINE, "echo", "hello"})
 		podman1.WaitWithDefaultTimeout()
+		if IsRemote() {
+			// --namespace flag not supported in podman remote
+			Expect(podman1.ExitCode()).To(Equal(125))
+			Expect(podman1.ErrorToString()).To(ContainSubstring("unknown flag: --namespace"))
+			return
+		}
 		Expect(podman1.ExitCode()).To(Equal(0))
 
 		podman2 := podmanTest.Podman([]string{"--namespace", "test2", "ps", "-aq"})

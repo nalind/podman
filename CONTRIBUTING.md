@@ -1,5 +1,5 @@
 ![PODMAN logo](logo/podman-logo-source.svg)
-# Contributing to libpod
+# Contributing to Podman
 
 We'd love to have you join the community! Below summarizes the processes
 that we follow.
@@ -7,14 +7,16 @@ that we follow.
 ## Topics
 
 * [Reporting Issues](#reporting-issues)
-* [Contributing to libpod](#contributing-to-libpod)
+* [Working On Issues](#working-on-issues)
+* [Contributing to Podman](#contributing-to-podman)
+* [Continuous Integration](#continuous-integration) [![Build Status](https://api.cirrus-ci.com/github/containers/podman.svg)](https://cirrus-ci.com/github/containers/podman/master)
 * [Submitting Pull Requests](#submitting-pull-requests)
 * [Communications](#communications)
 
 ## Reporting Issues
 
 Before reporting an issue, check our backlog of
-[open issues](https://github.com/containers/libpod/issues)
+[open issues](https://github.com/containers/podman/issues)
 to see if someone else has already reported it. If so, feel free to add
 your scenario, or additional information, to the discussion. Or simply
 "subscribe" to it to be notified when it is updated.
@@ -27,43 +29,48 @@ The easier it is for us to reproduce it, the faster it'll be fixed!
 
 Please don't include any private/sensitive information in your issue!
 
-## Contributing to libpod
+## Working On Issues
 
-This section describes how to start a contribution to libpod.
+Once you have decided to contribute to Podman by working on an issue, check our
+backlog of [open issues](https://github.com/containers/podman/issues) looking
+for any that do not have an "In Progress" label attached to it.  Often issues
+will be assigned to someone, to be worked on at a later time.  If you have the
+time to work on the issue now add yourself as an assignee, and set the
+"In Progress" label if you’re a member of the “Containers” GitHub organization.
+If you can not set the label, just  add a quick comment in the issue asking that
+the “In Progress” label be set and a member will do so for you.
+
+## Contributing to Podman
+
+This section describes how to start a contribution to Podman.
 
 ### Prepare your environment
 
-Read the [install documentation to see how to install dependencies](install.md) .
+Read the [install documentation to see how to install dependencies](https://podman.io/getting-started/installation#build-and-run-dependencies).
 
 The install documentation will illustrate the following steps:
 - install libs and tools
 - check installed versions
 - configure network
-- how to install libpod from sources
+- how to install Podman from sources
 
-### Fork and clone libpod
+### Fork and clone Podman
 
 First you need to fork this project on GitHub.
 
 Be sure to have [defined your `$GOPATH` environment variable](https://github.com/golang/go/wiki/GOPATH).
 
-Create a path that correspond to your clone `mkdir -p $GOPATH/github.com/<you>`.
+Create a path that corresponds to the go import paths of Podman: `mkdir -p $GOPATH/src/github.com/containers`.
 
-Clone your fork locally:
+Then clone your fork locally:
 ```shell
-$ git clone git@github.com:<you>/libpod github.com/<you> $GOPATH/github.com/<you>/libpod
-$ cd $GOPATH/github.com/<you>/libpod
-```
-
-You can also use `go get` to clone your fork:
-```shell
-$ go get github.com:<you>/libpod
-$ cd $GOPATH/github.com/<you>/libpod
+$ git clone git@github.com:<you>/podman $GOPATH/src/github.com/containers/podman
+$ cd $GOPATH/src/github.com/containers/podman
 ```
 
 ### Deal with make
 
-Libpod use a Makefile to realize common action like building etc...
+Podman use a Makefile to realize common action like building etc...
 
 You can list available actions by using:
 ```shell
@@ -78,6 +85,17 @@ Makefile allow you to install needed tools:
 ```shell
 $ make install.tools
 ```
+
+### Prerequisite before build
+
+You need install some dependencies before building a binary.
+
+#### Fedora
+
+  ```shell
+  $ sudo dnf install gpgme-devel libseccomp-devel.x86_64 libseccomp-devel.x86_64 systemd-devel
+  $ export PKG_CONFIG_PATH="/usr/lib/pkgconfig"
+  ```
 
 ### Building binaries and test your changes
 
@@ -108,6 +126,10 @@ Well, you can now create your own branch, apply changes on it, and then submitti
 
 For further reading about branching [you can read this document](https://herve.beraud.io/containers/linux/podman/isolate/environment/2019/02/06/how-to-hack-on-podman.html).
 
+## Documentation
+
+Make sure to update the documentation if needed. You can find the man pages under `docs/source/markdown`. The syntax for the formatting of all man pages can be found [here](docs/MANPAGE_SYNTAX.md).
+
 ## Submitting Pull Requests
 
 No Pull Request (PR) is too small! Typos, additional comments in the code,
@@ -124,9 +146,13 @@ larger PRs into smaller ones - it's easier to review smaller
 code changes. But only if those smaller ones make sense as stand-alone PRs.
 
 Regardless of the type of PR, all PRs should include:
-* well documented code changes
-* additional testcases. Ideally, they should fail w/o your code change applied
-* documentation changes
+* well documented code changes.
+* additional testcases. Ideally, they should fail w/o your code change applied.
+  (With a few exceptions, CI hooks will block your PR unless your change
+  includes files named `*_test.go` or under the `test/` subdirectory. To
+  bypass this block, include the string `[NO TESTS NEEDED]` in your
+  commit message).
+* documentation changes.
 
 Squash your commits into logical pieces of work that might want to be reviewed
 separate from the rest of the PRs. But, squashing down to just one commit is ok
@@ -138,6 +164,10 @@ commit message so that GitHub will automatically close the referenced issue
 when the PR is merged.
 
 PRs will be approved by an [approver][owners] listed in [`OWNERS`](OWNERS).
+
+In case you're only changing docs, make sure to prefix the PR title with
+"[CI:DOCS]".  That will prevent functional tests from running and save time and
+energy.
 
 ### Describe your Changes in Commit Messages
 
@@ -185,7 +215,7 @@ Commit f641c2d9384e ("fix bug in rm -fa parallel deletes") [...]
 ```
 
 You should also be sure to use at least the first twelve characters of the
-SHA-1 ID. The libpod repository holds a lot of objects, making collisions with
+SHA-1 ID. The Podman repository holds a lot of objects, making collisions with
 shorter IDs a real possibility. Bear in mind that, even if there is no
 collision with your six-character ID now, that condition may change five years
 from now.
@@ -264,30 +294,59 @@ commit automatically with `git commit -s`.
 
 ### Go Format and lint
 
-All code changes must pass ``make validate`` and ``make lint``, as
-executed in a standard container.  The container image for this
-purpose is provided at: ``quay.io/libpod/gate:latest``.  However,
-for changes to the image itself, it may also be built locally
-from the repository root, with the command:
+All code changes must pass ``make validate`` and ``make lint``.
 
 ```
-sudo podman build -t quay.io/libpod/gate:latest -f contrib/gate/Dockerfile .
+podman build -t gate -f contrib/gate/Dockerfile .
 ```
 
 ***N/B:*** **don't miss the dot (.) at the end, it's really important**
 
-The container executes 'make' by default, on a copy of the repository.
-This avoids changing or leaving build artifacts in your working directory.
-Execution does not require any special permissions from the host. However,
-the repository root must be bind-mounted into the container at
-'/usr/src/libpod'. For example, running `make lint` is done (from
-the repository root) with the command:
+#### Local use of gate container
 
-``sudo podman run -it --rm -v $PWD:/usr/src/libpod:ro --security-opt label=disable quay.io/libpod/gate:latest lint``
+The gate container's entry-point executes 'make' by default, on a copy of
+the repository made at runtime.  This avoids the container changing or
+leaving build artifacts in your hosts working directory.  It also guarantees
+every execution is based upon pristine code provided from the host.
+
+Execution does not require any special permissions from the host. However,
+your Podman repository clone's root must be bind-mounted to the container at
+'/usr/src/libpod'.  The copy will be made into /var/tmp/go (`$GOSRC` in container)
+before running your make target.  For example, running `make lint` from a
+repository clone at $HOME/devel/podman could be done with the commands:
+
+```bash
+$ cd $HOME/devel/podman
+$ podman run -it --rm -v $PWD:/usr/src/libpod:ro \
+    --security-opt label=disable quay.io/libpod/gate:master \
+    lint
+```
+
+***N/B:*** Depending on your clone's git remotes-configuration,
+(esp. for `validate` and `lint` targets), you may also need to reference the
+commit which was your upstream fork-point.  Otherwise you may receive an error
+similar to:
+
+```
+fatal: Not a valid object name master
+Makefile:152: *** Required variable EPOCH_TEST_COMMIT value is undefined, whitespace, or empty.  Stop.
+```
+
+For example, assuming your have a remote called `upstream` running the
+validate target should be done like this:
+
+```bash
+$ cd $HOME/devel/podman
+$ git remote update upstream
+$ export EPOCH_TEST_COMMIT=$(git merge-base upstream/master HEAD)
+$ podman run -it --rm -e EPOCH_TEST_COMMIT -v $PWD:/usr/src/libpod:ro \
+    --security-opt label=disable quay.io/libpod/gate:master \
+    validate
+```
 
 ### Integration Tests
 
-Our primary means of performing integration testing for libpod is with the
+Our primary means of performing integration testing for Podman is with the
 [Ginkgo](https://github.com/onsi/ginkgo) BDD testing framework. This allows
 us to use native Golang to perform our tests and there is a strong affiliation
 between Ginkgo and the Go test framework.  Adequate test cases are expected to
@@ -296,19 +355,58 @@ be provided with PRs.
 For details on how to run the tests for Podman in your test environment, see the
 Integration Tests [README.md](test/README.md).
 
+## Continuous Integration
+
+All pull requests and branch-merges automatically run:
+
+* Go format/lint checking
+* Unit testing
+* Integration Testing
+* Special testing (like running inside a container, or as a regular user)
+
+There is always additional complexity added by automation, and so it sometimes
+can fail for any number of reasons.  This includes post-merge testing on all
+branches, which you may occasionally see [red bars on the status graph
+.](https://cirrus-ci.com/github/containers/podman/master)
+
+When the graph shows mostly green bars on the right, it's a good indication
+the master branch is currently stable.  Alternating red/green bars is indicative
+of a testing "flake", and should be examined (anybody can do this):
+
+* *One or a small handful of tests, on a single task, (i.e. specific distro/version)
+  where all others ran successfully:*  Frequently the cause is networking or a brief
+  external service outage.  The failed tasks may simply be re-run by pressing the
+  corresponding button on the task details page.
+
+* *Multiple tasks failing*: Logically this should be due to some shared/common element.
+  If that element is identifiable as a networking or external service (e.g. packaging
+  repository outage), a re-run should be attempted.
+
+* *All tasks are failing*: If a common element is **not** identifiable as
+  temporary (i.e. container registry outage), please seek assistance via
+  [the methods below](#communications) as this may be early indication of
+  a more serious problem.
+
+In the (hopefully) rare case there are multiple, contiguous red bars, this is
+a ***very bad*** sign.  It means additional merges are occurring despite an uncorrected
+or persistently faulty condition.  This risks additional bugs being introduced
+and further complication of necessary corrective measures.  Most likely people
+are aware and working on this, but it doesn't hurt [to confirm and/or try and help
+if possible.](#communications)
+
 ## Communications
 
 For general questions and discussion, please use the
-IRC `#podman` channel on `irc.freenode.net`.
+IRC `#podman` channel on `irc.libera.chat`.
 
 For discussions around issues/bugs and features, you can use the GitHub
-[issues](https://github.com/containers/libpod/issues)
+[issues](https://github.com/containers/podman/issues)
 and
-[PRs](https://github.com/containers/libpod/pulls)
+[PRs](https://github.com/containers/podman/pulls)
 tracking system.
 
-[owners]: https://github.com/kubernetes/community/blob/master/contributors/guide/owners.md#owners
-
+There is also a [mailing list](https://lists.podman.io/archives/) at `lists.podman.io`.
+You can subscribe by sending a message to `podman@lists.podman.io` with the subject `subscribe`.
 
 ### Bot Interactions
 
@@ -336,7 +434,7 @@ author hold special privileges on the github repository.  Others can be used by 
   will cause Cirrus CI to ***NOT*** execute tests for the PR or after merge.  This
   is useful in only one instance:  Your changes are absolutely not exercised by
   any test.  For example, documentation changes.  ***IMPORTANT NOTE*** **Other
-  automation may interpret the lack of test results as "PASSED" and unintentionall
+  automation may interpret the lack of test results as "PASSED" and unintentional
   merge a PR.  Consider also using `/hold` in a comment, to add additional
   protection.**
 

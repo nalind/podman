@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v3/pkg/rootless"
 	"github.com/containers/psgo"
 )
 
@@ -13,7 +15,7 @@ import (
 // the pod.  The output data can be controlled via the `descriptors`
 // argument which expects format descriptors and supports all AIXformat
 // descriptors of ps (1) plus some additional ones to for instance inspect the
-// set of effective capabilities.  Eeach element in the returned string slice
+// set of effective capabilities.  Each element in the returned string slice
 // is a tab-separated string.
 //
 // For more details, please refer to github.com/containers/psgo.
@@ -33,17 +35,28 @@ func (p *Pod) GetPodPidInformation(descriptors []string) ([]string, error) {
 			c.lock.Unlock()
 			return nil, err
 		}
-		if c.state.State == ContainerStateRunning {
+		if c.state.State == define.ContainerStateRunning {
 			pid := strconv.Itoa(c.state.PID)
 			pids = append(pids, pid)
 		}
 		c.lock.Unlock()
 	}
+
+	// Also support comma-separated input.
+	psgoDescriptors := []string{}
+	for _, d := range descriptors {
+		for _, s := range strings.Split(d, ",") {
+			if s != "" {
+				psgoDescriptors = append(psgoDescriptors, s)
+			}
+		}
+	}
+
 	// TODO: psgo returns a [][]string to give users the ability to apply
-	//       filters on the data.  We need to change the API here and the
-	//       varlink API to return a [][]string if we want to make use of
-	//       filtering.
-	output, err := psgo.JoinNamespaceAndProcessInfoByPids(pids, descriptors)
+	//       filters on the data.  We need to change the API here to return
+	//       a [][]string if we want to make use of filtering.
+	opts := psgo.JoinNamespaceOpts{FillMappings: rootless.IsRootless()}
+	output, err := psgo.JoinNamespaceAndProcessInfoByPidsWithOptions(pids, psgoDescriptors, &opts)
 	if err != nil {
 		return nil, err
 	}

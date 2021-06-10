@@ -11,9 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/buildah/unshare"
+	"github.com/containers/buildah/util"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/system"
+	"github.com/containers/storage/pkg/unshare"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -27,10 +29,7 @@ type InfoData struct {
 func Info(store storage.Store) ([]InfoData, error) {
 	info := []InfoData{}
 	// get host information
-	hostInfo, err := hostInfo()
-	if err != nil {
-		logrus.Error(err, "error getting host info")
-	}
+	hostInfo := hostInfo()
 	info = append(info, InfoData{Type: "host", Data: hostInfo})
 
 	// get store information
@@ -42,22 +41,35 @@ func Info(store storage.Store) ([]InfoData, error) {
 	return info, nil
 }
 
-func hostInfo() (map[string]interface{}, error) {
+func hostInfo() map[string]interface{} {
 	info := map[string]interface{}{}
 	info["os"] = runtime.GOOS
 	info["arch"] = runtime.GOARCH
 	info["cpus"] = runtime.NumCPU()
 	info["rootless"] = unshare.IsRootless()
+
+	unified, err := util.IsCgroup2UnifiedMode()
+	if err != nil {
+		logrus.Error(err, "err reading cgroups mode")
+	}
+	cgroupVersion := "v1"
+	ociruntime := util.Runtime()
+	if unified {
+		cgroupVersion = "v2"
+	}
+	info["CgroupVersion"] = cgroupVersion
+	info["OCIRuntime"] = ociruntime
+
 	mi, err := system.ReadMemInfo()
 	if err != nil {
 		logrus.Error(err, "err reading memory info")
 		info["MemTotal"] = ""
-		info["MenFree"] = ""
+		info["MemFree"] = ""
 		info["SwapTotal"] = ""
 		info["SwapFree"] = ""
 	} else {
 		info["MemTotal"] = mi.MemTotal
-		info["MenFree"] = mi.MemFree
+		info["MemFree"] = mi.MemFree
 		info["SwapTotal"] = mi.SwapTotal
 		info["SwapFree"] = mi.SwapFree
 	}
@@ -115,8 +127,7 @@ func hostInfo() (map[string]interface{}, error) {
 	}
 	info["hostname"] = host
 
-	return info, nil
-
+	return info
 }
 
 // top-level "store" info
@@ -174,7 +185,7 @@ func readUptime() (string, error) {
 	}
 	f := bytes.Fields(buf)
 	if len(f) < 1 {
-		return "", fmt.Errorf("invalid uptime")
+		return "", errors.Errorf("invalid uptime")
 	}
 	return string(f[0]), nil
 }

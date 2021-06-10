@@ -1,12 +1,10 @@
-// +build !remoteclient
-
 package integration
 
 import (
 	"os"
 	"strconv"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -25,12 +23,11 @@ var _ = Describe("Podman pod create", func() {
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.RestoreAllArtifacts()
-		podmanTest.RestoreArtifact(infra)
+		podmanTest.SeedImages()
 	})
 
 	AfterEach(func() {
-		podmanTest.CleanupPod()
+		podmanTest.Cleanup()
 		f := CurrentGinkgoTestDescription()
 		processTestResult(f)
 
@@ -95,12 +92,17 @@ var _ = Describe("Podman pod create", func() {
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 
-		check := podmanTest.Podman([]string{"ps", "-a", "--no-trunc", "--ns", "--format", "{{.IPC}} {{.NET}}"})
+		check := podmanTest.Podman([]string{"ps", "-a", "--no-trunc", "--ns", "--format", "{{.Namespaces.IPC}} {{.Namespaces.NET}}"})
 		check.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 		Expect(len(check.OutputToStringArray())).To(Equal(2))
 		Expect(check.OutputToStringArray()[0]).To(Equal(check.OutputToStringArray()[1]))
 
+		check = podmanTest.Podman([]string{"ps", "-a", "--no-trunc", "--ns", "--format", "{{.IPC}} {{.NET}}"})
+		check.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(len(check.OutputToStringArray())).To(Equal(2))
+		Expect(check.OutputToStringArray()[0]).To(Equal(check.OutputToStringArray()[1]))
 	})
 
 	It("podman pod correctly sets up NetNS", func() {
@@ -113,19 +115,17 @@ var _ = Describe("Podman pod create", func() {
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 
-		podmanTest.RestoreArtifact(nginx)
 		session = podmanTest.Podman([]string{"run", "-d", "--pod", podID, nginx})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 
-		podmanTest.RestoreArtifact(fedoraMinimal)
 		session = podmanTest.Podman([]string{"run", "--pod", podID, fedoraMinimal, "curl", "localhost:80"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 
 		session = podmanTest.Podman([]string{"run", fedoraMinimal, "curl", "localhost"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Not(Equal(0)))
+		Expect(session).To(ExitWithError())
 	})
 
 	It("podman pod correctly sets up IPCNS", func() {
@@ -138,7 +138,6 @@ var _ = Describe("Podman pod create", func() {
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 
-		podmanTest.RestoreArtifact(fedoraMinimal)
 		session = podmanTest.Podman([]string{"run", "--pod", podID, fedoraMinimal, "/bin/sh", "-c", "'touch /dev/shm/hi'"})
 		session.WaitWithDefaultTimeout()
 		if session.ExitCode() != 0 {
@@ -216,17 +215,17 @@ var _ = Describe("Podman pod create", func() {
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 
-		podmanTest.RestoreArtifact(nginx)
 		session = podmanTest.Podman([]string{"run", "-d", "--pod", podID, nginx})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 
 		session = podmanTest.Podman([]string{"run", "--pod", podID, "--network", "bridge", nginx, "curl", "localhost"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Not(Equal(0)))
+		Expect(session).To(ExitWithError())
 	})
 
 	It("podman pod container can override pod pid NS", func() {
+		SkipIfRootlessCgroupsV1("Not supported for rootless + CGroupsV1")
 		session := podmanTest.Podman([]string{"pod", "create", "--share", "pid"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
@@ -240,10 +239,16 @@ var _ = Describe("Podman pod create", func() {
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 
-		check := podmanTest.Podman([]string{"ps", "-a", "--ns", "--format", "{{.PIDNS}}"})
+		check := podmanTest.Podman([]string{"ps", "-a", "--ns", "--format", "{{.Namespaces.PIDNS}}"})
 		check.WaitWithDefaultTimeout()
 		Expect(check.ExitCode()).To(Equal(0))
 		outputArray := check.OutputToStringArray()
+		Expect(len(outputArray)).To(Equal(2))
+
+		check = podmanTest.Podman([]string{"ps", "-a", "--ns", "--format", "{{.PIDNS}}"})
+		check.WaitWithDefaultTimeout()
+		Expect(check.ExitCode()).To(Equal(0))
+		outputArray = check.OutputToStringArray()
 		Expect(len(outputArray)).To(Equal(2))
 
 		PID1 := outputArray[0]
@@ -314,7 +319,7 @@ var _ = Describe("Podman pod create", func() {
 
 		session = podmanTest.Podman([]string{"rm", infraID})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Not(Equal(0)))
+		Expect(session).To(ExitWithError())
 
 		session = podmanTest.Podman([]string{"pod", "rm", podID})
 		session.WaitWithDefaultTimeout()
@@ -379,13 +384,35 @@ var _ = Describe("Podman pod create", func() {
 		podID := session.OutputToString()
 
 		// verify we can add a host to the infra's /etc/hosts
-		session = podmanTest.Podman([]string{"run", "--pod", podID, "--add-host", "foobar:127.0.0.1", BB, "ping", "-c", "1", "foobar"})
+		// N/B: Using alpine for ping, since BB ping throws
+		//      permission denied error as of Fedora 33.
+		session = podmanTest.Podman([]string{"run", "--pod", podID, "--add-host", "foobar:127.0.0.1", ALPINE, "ping", "-c", "1", "foobar"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 
 		// verify we can see the other hosts of infra's /etc/hosts
-		session = podmanTest.Podman([]string{"run", "--pod", podID, BB, "ping", "-c", "1", "foobar"})
+		session = podmanTest.Podman([]string{"run", "--pod", podID, ALPINE, "ping", "-c", "1", "foobar"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
+	})
+
+	It("podman run hostname is shared", func() {
+		session := podmanTest.Podman([]string{"pod", "create"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		podID := session.OutputToString()
+
+		// verify we can add a host to the infra's /etc/hosts
+		session = podmanTest.Podman([]string{"run", "--pod", podID, ALPINE, "hostname"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		hostname := session.OutputToString()
+
+		infraName := podID[:12] + "-infra"
+		// verify we can see the other hosts of infra's /etc/hosts
+		session = podmanTest.Podman([]string{"inspect", infraName})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(session.OutputToString()).To(ContainSubstring(hostname))
 	})
 })

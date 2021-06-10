@@ -30,12 +30,15 @@ type Copy struct {
 	// If set, the owner:group for the destination.  This value is passed
 	// to the executor for handling.
 	Chown string
+	Chmod string
 }
 
 // Run defines a run operation required in the container.
 type Run struct {
 	Shell bool
 	Args  []string
+	// Mounts are mounts specified through the --mount flag inside the Containerfile
+	Mounts []string
 }
 
 type Executor interface {
@@ -60,13 +63,13 @@ func (logExecutor) EnsureContainerPath(path string) error {
 
 func (logExecutor) Copy(excludes []string, copies ...Copy) error {
 	for _, c := range copies {
-		log.Printf("COPY %v -> %s (from:%s download:%t), chown: %s", c.Src, c.Dest, c.From, c.Download, c.Chown)
+		log.Printf("COPY %v -> %s (from:%s download:%t), chown: %s, chmod %s", c.Src, c.Dest, c.From, c.Download, c.Chown, c.Chmod)
 	}
 	return nil
 }
 
 func (logExecutor) Run(run Run, config docker.Config) error {
-	log.Printf("RUN %v %t (%v)", run.Args, run.Shell, config.Env)
+	log.Printf("RUN %v %v %t (%v)", run.Args, run.Mounts, run.Shell, config.Env)
 	return nil
 }
 
@@ -209,11 +212,8 @@ func NewStages(node *parser.Node, b *Builder) (Stages, error) {
 		stages = append(stages, Stage{
 			Position: i,
 			Name:     name,
-			Builder: &Builder{
-				Args:        b.Args,
-				AllowedArgs: b.AllowedArgs,
-			},
-			Node: root,
+			Builder:  b.builderForStage(),
+			Node:     root,
 		})
 	}
 	return stages, nil
@@ -234,17 +234,30 @@ func (b *Builder) extractHeadingArgsFromNode(node *parser.Node) error {
 		}
 	}
 
+	// Set children equal to everything except the leading ARG nodes
+	node.Children = children
+
+	// Use a separate builder to evaluate the heading args
+	tempBuilder := NewBuilder(b.UserArgs)
+
+	// Evaluate all the heading arg commands
 	for _, c := range args {
-		step := b.Step()
+		step := tempBuilder.Step()
 		if err := step.Resolve(c); err != nil {
 			return err
 		}
-		if err := b.Run(step, NoopExecutor, false); err != nil {
+		if err := tempBuilder.Run(step, NoopExecutor, false); err != nil {
 			return err
 		}
 	}
 
-	node.Children = children
+	// Add all of the defined heading args to the original builder's HeadingArgs map
+	for k, v := range tempBuilder.Args {
+		if _, ok := tempBuilder.AllowedArgs[k]; ok {
+			b.HeadingArgs[k] = v
+		}
+	}
+
 	return nil
 }
 
@@ -263,13 +276,23 @@ func extractNameFromNode(node *parser.Node) (string, bool) {
 	return n.Next.Value, true
 }
 
+func (b *Builder) builderForStage() *Builder {
+	stageBuilder := NewBuilder(b.UserArgs)
+	for k, v := range b.HeadingArgs {
+		stageBuilder.HeadingArgs[k] = v
+	}
+	return stageBuilder
+}
+
 type Builder struct {
 	RunConfig docker.Config
 
-	Env    []string
-	Args   map[string]string
-	CmdSet bool
-	Author string
+	Env         []string
+	Args        map[string]string
+	HeadingArgs map[string]string
+	UserArgs    map[string]string
+	CmdSet      bool
+	Author      string
 
 	AllowedArgs map[string]bool
 	Volumes     VolumeSet
@@ -287,8 +310,16 @@ func NewBuilder(args map[string]string) *Builder {
 	for k, v := range builtinAllowedBuildArgs {
 		allowed[k] = v
 	}
+	userArgs := make(map[string]string)
+	initialArgs := make(map[string]string)
+	for k, v := range args {
+		userArgs[k] = v
+		initialArgs[k] = v
+	}
 	return &Builder{
-		Args:        args,
+		Args:        initialArgs,
+		UserArgs:    userArgs,
+		HeadingArgs: make(map[string]string),
 		AllowedArgs: allowed,
 	}
 }
@@ -304,11 +335,10 @@ func ParseFile(path string) (*parser.Node, error) {
 
 // Step creates a new step from the current state.
 func (b *Builder) Step() *Step {
-	dst := make([]string, len(b.Env)+len(b.RunConfig.Env))
-	copy(dst, b.Env)
-	dst = append(dst, b.RunConfig.Env...)
-	dst = append(dst, b.Arguments()...)
-	return &Step{Env: dst}
+	// Include build arguments in the table of variables that we'll use in
+	// Resolve(), but override them with values from the actual
+	// environment in case there's any conflict.
+	return &Step{Env: mergeEnv(b.Arguments(), mergeEnv(b.Env, b.RunConfig.Env))}
 }
 
 // Run executes a step, transforming the current builder and
@@ -436,7 +466,7 @@ func (b *Builder) FromImage(image *docker.Image, node *parser.Node) error {
 	SplitChildren(node, command.From)
 
 	b.RunConfig = *image.Config
-	b.Env = b.RunConfig.Env
+	b.Env = mergeEnv(b.Env, b.RunConfig.Env)
 	b.RunConfig.Env = nil
 
 	// Check to see if we have a default PATH, note that windows won't
@@ -535,15 +565,39 @@ var builtinAllowedBuildArgs = map[string]bool{
 	"no_proxy":    true,
 }
 
-// ParseDockerIgnore returns a list of the excludes in the .dockerignore file.
-// extracted from fsouza/go-dockerclient.
-func ParseDockerignore(root string) ([]string, error) {
+// ParseIgnore returns a list of the excludes in the specified path
+// path should be a file with the .dockerignore format
+// extracted from fsouza/go-dockerclient and modified to drop comments and
+// empty lines.
+func ParseIgnore(path string) ([]string, error) {
 	var excludes []string
-	ignore, err := ioutil.ReadFile(filepath.Join(root, ".dockerignore"))
-	if err != nil && !os.IsNotExist(err) {
-		return excludes, fmt.Errorf("error reading .dockerignore: '%s'", err)
+
+	ignores, err := ioutil.ReadFile(path)
+	if err != nil {
+		return excludes, err
 	}
-	return strings.Split(string(ignore), "\n"), nil
+	for _, ignore := range strings.Split(string(ignores), "\n") {
+		if len(ignore) == 0 || ignore[0] == '#' {
+			continue
+		}
+		ignore = strings.Trim(ignore, "/")
+		if len(ignore) > 0 {
+			excludes = append(excludes, ignore)
+		}
+	}
+	return excludes, nil
+}
+
+// ParseDockerIgnore returns a list of the excludes in the .containerignore or .dockerignore file.
+func ParseDockerignore(root string) ([]string, error) {
+	excludes, err := ParseIgnore(filepath.Join(root, ".containerignore"))
+	if err != nil && os.IsNotExist(err) {
+		excludes, err = ParseIgnore(filepath.Join(root, ".dockerignore"))
+	}
+	if err != nil && os.IsNotExist(err) {
+		return excludes, nil
+	}
+	return excludes, err
 }
 
 // ExportEnv creates an export statement for a shell that contains all of the

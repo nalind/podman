@@ -2,32 +2,32 @@ package libpod
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
 	"os"
-	"strconv"
+	"sync"
 	"time"
 
-	"github.com/containers/libpod/libpod/driver"
-	"github.com/containers/libpod/libpod/events"
-	"github.com/containers/libpod/pkg/inspect"
-	"github.com/containers/libpod/pkg/lookup"
-	"github.com/containers/storage/pkg/stringid"
-	"github.com/docker/docker/oci/caps"
-	"github.com/opentracing/opentracing-go"
+	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v3/libpod/events"
+	"github.com/containers/podman/v3/pkg/signal"
+	"github.com/containers/storage/pkg/archive"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/tools/remotecommand"
 )
 
-// Init creates a container in the OCI runtime
-func (c *Container) Init(ctx context.Context) (err error) {
-	span, _ := opentracing.StartSpanFromContext(ctx, "containerInit")
-	span.SetTag("struct", "container")
-	defer span.Finish()
-
+// Init creates a container in the OCI runtime, moving a container from
+// ContainerStateConfigured, ContainerStateStopped, or ContainerStateExited to
+// ContainerStateCreated. Once in Created state, Conmon will be running, which
+// allows the container to be attached to. The container can subsequently
+// transition to ContainerStateRunning via Start(), or be transitioned back to
+// ContainerStateConfigured by Cleanup() (which will stop conmon and unmount the
+// container).
+// Init requires that all dependency containers be started (e.g. pod infra
+// containers). The `recursive` parameter will, if set to true, start these
+// dependency containers before initializing this container.
+func (c *Container) Init(ctx context.Context, recursive bool) error {
 	if !c.batched {
 		c.lock.Lock()
 		defer c.lock.Unlock()
@@ -37,15 +37,18 @@ func (c *Container) Init(ctx context.Context) (err error) {
 		}
 	}
 
-	if !(c.state.State == ContainerStateConfigured ||
-		c.state.State == ContainerStateStopped ||
-		c.state.State == ContainerStateExited) {
-		return errors.Wrapf(ErrCtrExists, "container %s has already been created in runtime", c.ID())
+	if !c.ensureState(define.ContainerStateConfigured, define.ContainerStateStopped, define.ContainerStateExited) {
+		return errors.Wrapf(define.ErrCtrStateInvalid, "container %s has already been created in runtime", c.ID())
 	}
 
-	// don't recursively start
-	if err := c.checkDependenciesAndHandleError(ctx); err != nil {
-		return err
+	if !recursive {
+		if err := c.checkDependenciesAndHandleError(); err != nil {
+			return err
+		}
+	} else {
+		if err := c.startDependencies(ctx); err != nil {
+			return err
+		}
 	}
 
 	if err := c.prepare(); err != nil {
@@ -55,27 +58,28 @@ func (c *Container) Init(ctx context.Context) (err error) {
 		return err
 	}
 
-	if c.state.State == ContainerStateStopped {
+	if c.state.State == define.ContainerStateStopped {
 		// Reinitialize the container
-		return c.reinit(ctx)
+		return c.reinit(ctx, false)
 	}
 
 	// Initialize the container for the first time
-	return c.init(ctx)
+	return c.init(ctx, false)
 }
 
-// Start starts a container.
-// Start can start configured, created or stopped containers.
-// For configured containers, the container will be initialized first, then
-// started.
-// Stopped containers will be deleted and re-created in runc, undergoing a fresh
-// Init().
-// If recursive is set, Start will also start all containers this container depends on.
-func (c *Container) Start(ctx context.Context, recursive bool) (err error) {
-	span, _ := opentracing.StartSpanFromContext(ctx, "containerStart")
-	span.SetTag("struct", "container")
-	defer span.Finish()
-
+// Start starts the given container.
+// Start will accept container in ContainerStateConfigured,
+// ContainerStateCreated, ContainerStateStopped, and ContainerStateExited, and
+// transition them to ContainerStateRunning (all containers not in
+// ContainerStateCreated will make an intermediate stop there via the Init API).
+// Once in ContainerStateRunning, the container can be transitioned to
+// ContainerStatePaused via Pause(), or to ContainerStateStopped by the process
+// stopping (either due to exit, or being forced to stop by the Kill or Stop API
+// calls).
+// Start requites that all dependency containers (e.g. pod infra containers) be
+// running before being run. The recursive parameter, if set, will start all
+// dependencies before starting this container.
+func (c *Container) Start(ctx context.Context, recursive bool) error {
 	if !c.batched {
 		c.lock.Lock()
 		defer c.lock.Unlock()
@@ -93,17 +97,12 @@ func (c *Container) Start(ctx context.Context, recursive bool) (err error) {
 }
 
 // StartAndAttach starts a container and attaches to it.
-// StartAndAttach can start configured, created or stopped containers.
-// For configured containers, the container will be initialized first, then
-// started.
-// Stopped containers will be deleted and re-created in runc, undergoing a fresh
-// Init().
-// If successful, an error channel will be returned containing the result of the
-// attach call.
-// The channel will be closed automatically after the result of attach has been
-// sent.
-// If recursive is set, StartAndAttach will also start all containers this container depends on.
-func (c *Container) StartAndAttach(ctx context.Context, streams *AttachStreams, keys string, resize <-chan remotecommand.TerminalSize, recursive bool) (attachResChan <-chan error, err error) {
+// This acts as a combination of the Start and Attach APIs, ensuring proper
+// ordering of the two such that no output from the container is lost (e.g. the
+// Attach call occurs before Start).
+// In overall functionality, it is identical to the Start call, with the added
+// side effect that an attach session will also be started.
+func (c *Container) StartAndAttach(ctx context.Context, streams *define.AttachStreams, keys string, resize <-chan define.TerminalSize, recursive bool) (<-chan error, error) {
 	if !c.batched {
 		c.lock.Lock()
 		defer c.lock.Unlock()
@@ -116,22 +115,32 @@ func (c *Container) StartAndAttach(ctx context.Context, streams *AttachStreams, 
 	if err := c.prepareToStart(ctx, recursive); err != nil {
 		return nil, err
 	}
-
 	attachChan := make(chan error)
+
+	// We need to ensure that we don't return until start() fired in attach.
+	// Use a channel to sync
+	startedChan := make(chan bool)
 
 	// Attach to the container before starting it
 	go func() {
-		if err := c.attach(streams, keys, resize, true); err != nil {
+		if err := c.attach(streams, keys, resize, true, startedChan, nil); err != nil {
 			attachChan <- err
 		}
 		close(attachChan)
 	}()
-	c.newContainerEvent(events.Attach)
+
+	select {
+	case err := <-attachChan:
+		return nil, err
+	case <-startedChan:
+		c.newContainerEvent(events.Attach)
+	}
+
 	return attachChan, nil
 }
 
 // RestartWithTimeout restarts a running container and takes a given timeout in uint
-func (c *Container) RestartWithTimeout(ctx context.Context, timeout uint) (err error) {
+func (c *Container) RestartWithTimeout(ctx context.Context, timeout uint) error {
 	if !c.batched {
 		c.lock.Lock()
 		defer c.lock.Unlock()
@@ -141,7 +150,7 @@ func (c *Container) RestartWithTimeout(ctx context.Context, timeout uint) (err e
 		}
 	}
 
-	if err = c.checkDependenciesAndHandleError(ctx); err != nil {
+	if err := c.checkDependenciesAndHandleError(); err != nil {
 		return err
 	}
 
@@ -171,17 +180,14 @@ func (c *Container) StopWithTimeout(timeout uint) error {
 		}
 	}
 
-	if c.state.State == ContainerStateConfigured ||
-		c.state.State == ContainerStateUnknown ||
-		c.state.State == ContainerStatePaused {
-		return errors.Wrapf(ErrCtrStateInvalid, "can only stop created, running, or stopped containers. %s in state %s", c.ID(), c.state.State.String())
+	if c.ensureState(define.ContainerStateStopped, define.ContainerStateExited) {
+		return define.ErrCtrStopped
 	}
 
-	if c.state.State == ContainerStateStopped ||
-		c.state.State == ContainerStateExited {
-		return ErrCtrStopped
+	if !c.ensureState(define.ContainerStateCreated, define.ContainerStateRunning) {
+		return errors.Wrapf(define.ErrCtrStateInvalid, "can only stop created or running containers. %s is in state %s", c.ID(), c.state.State.String())
 	}
-	defer c.newContainerEvent(events.Stop)
+
 	return c.stop(timeout)
 }
 
@@ -196,202 +202,132 @@ func (c *Container) Kill(signal uint) error {
 		}
 	}
 
-	if c.state.State != ContainerStateRunning {
-		return errors.Wrapf(ErrCtrStateInvalid, "can only kill running containers")
+	// TODO: Is killing a paused container OK?
+	switch c.state.State {
+	case define.ContainerStateRunning, define.ContainerStateStopping:
+		// Note that killing containers in "stopping" state is okay.
+		// In that state, the Podman is waiting for the runtime to
+		// stop the container and if that is taking too long, a user
+		// may have decided to kill the container after all.
+	default:
+		return errors.Wrapf(define.ErrCtrStateInvalid, "can only kill running containers. %s is in state %s", c.ID(), c.state.State.String())
 	}
-	defer c.newContainerEvent(events.Kill)
-	return c.runtime.ociRuntime.killContainer(c, signal)
+
+	// Hardcode all = false, we only use all when removing.
+	if err := c.ociRuntime.KillContainer(c, signal, false); err != nil {
+		return err
+	}
+
+	c.state.StoppedByUser = true
+
+	c.newContainerEvent(events.Kill)
+
+	return c.save()
 }
 
-// Exec starts a new process inside the container
-// TODO investigate allowing exec without attaching
-func (c *Container) Exec(tty, privileged bool, env, cmd []string, user, workDir string, streams *AttachStreams, preserveFDs int) error {
-	var capList []string
-
-	locked := false
-	if !c.batched {
-		locked = true
-
-		c.lock.Lock()
-		defer func() {
-			if locked {
-				c.lock.Unlock()
-			}
-		}()
-
-		if err := c.syncContainer(); err != nil {
-			return err
-		}
-	}
-
-	conState := c.state.State
-
-	// TODO can probably relax this once we track exec sessions
-	if conState != ContainerStateRunning {
-		return errors.Errorf("cannot exec into container that is not running")
-	}
-	if privileged || c.config.Privileged {
-		capList = caps.GetAllCapabilities()
-	}
-
-	// If user was set, look it up in the container to get a UID to use on
-	// the host
-	hostUser := ""
-	if user != "" {
-		execUser, err := lookup.GetUserGroupInfo(c.state.Mountpoint, user, nil)
-		if err != nil {
-			return err
-		}
-
-		// runc expects user formatted as uid:gid
-		hostUser = fmt.Sprintf("%d:%d", execUser.Uid, execUser.Gid)
-	}
-
-	// Generate exec session ID
-	// Ensure we don't conflict with an existing session ID
-	sessionID := stringid.GenerateNonCryptoID()
-	found := true
-	// This really ought to be a do-while, but Go doesn't have those...
-	for found {
-		found = false
-		for id := range c.state.ExecSessions {
-			if id == sessionID {
-				found = true
-				break
-			}
-		}
-		if found == true {
-			sessionID = stringid.GenerateNonCryptoID()
-		}
-	}
-
-	logrus.Debugf("Creating new exec session in container %s with session id %s", c.ID(), sessionID)
-
-	execCmd, err := c.runtime.ociRuntime.execContainer(c, cmd, capList, env, tty, workDir, hostUser, sessionID, streams, preserveFDs)
-	if err != nil {
-		return errors.Wrapf(err, "error exec %s", c.ID())
-	}
-	chWait := make(chan error)
-	go func() {
-		chWait <- execCmd.Wait()
-	}()
-	defer close(chWait)
-
-	pidFile := c.execPidPath(sessionID)
-	// 60 second seems a reasonable time to wait
-	// https://github.com/containers/libpod/issues/1495
-	// https://github.com/containers/libpod/issues/1816
-	const pidWaitTimeout = 60000
-
-	// Wait until the runtime makes the pidfile
-	exited, err := WaitForFile(pidFile, chWait, pidWaitTimeout*time.Millisecond)
-	if err != nil {
-		if exited {
-			// If the runtime exited, propagate the error we got from the process.
-			return err
-		}
-		return errors.Wrapf(err, "timed out waiting for runtime to create pidfile for exec session in container %s", c.ID())
-	}
-
-	// Pidfile exists, read it
-	contents, err := ioutil.ReadFile(pidFile)
-	if err != nil {
-		// We don't know the PID of the exec session
-		// However, it may still be alive
-		// TODO handle this better
-		return errors.Wrapf(err, "could not read pidfile for exec session %s in container %s", sessionID, c.ID())
-	}
-	pid, err := strconv.ParseInt(string(contents), 10, 32)
-	if err != nil {
-		// As above, we don't have a valid PID, but the exec session is likely still alive
-		// TODO handle this better
-		return errors.Wrapf(err, "error parsing PID of exec session %s in container %s", sessionID, c.ID())
-	}
-
-	// We have the PID, add it to state
-	if c.state.ExecSessions == nil {
-		c.state.ExecSessions = make(map[string]*ExecSession)
-	}
-	session := new(ExecSession)
-	session.ID = sessionID
-	session.Command = cmd
-	session.PID = int(pid)
-	c.state.ExecSessions[sessionID] = session
-	if err := c.save(); err != nil {
-		// Now we have a PID but we can't save it in the DB
-		// TODO handle this better
-		return errors.Wrapf(err, "error saving exec sessions %s for container %s", sessionID, c.ID())
-	}
-	c.newContainerEvent(events.Exec)
-	logrus.Debugf("Successfully started exec session %s in container %s", sessionID, c.ID())
-
-	// Unlock so other processes can use the container
-	if !c.batched {
-		c.lock.Unlock()
-		locked = false
-	}
-
-	var waitErr error
-	if !exited {
-		waitErr = <-chWait
-	}
-
-	// Lock again
-	if !c.batched {
-		locked = true
-		c.lock.Lock()
-	}
-
-	// Sync the container again to pick up changes in state
-	if err := c.syncContainer(); err != nil {
-		return errors.Wrapf(err, "error syncing container %s state to remove exec session %s", c.ID(), sessionID)
-	}
-
-	// Remove the exec session from state
-	delete(c.state.ExecSessions, sessionID)
-	if err := c.save(); err != nil {
-		logrus.Errorf("Error removing exec session %s from container %s state: %v", sessionID, c.ID(), err)
-	}
-	return waitErr
-}
-
-// AttachStreams contains streams that will be attached to the container
-type AttachStreams struct {
-	// OutputStream will be attached to container's STDOUT
-	OutputStream io.WriteCloser
-	// ErrorStream will be attached to container's STDERR
-	ErrorStream io.WriteCloser
-	// InputStream will be attached to container's STDIN
-	InputStream io.Reader
-	// AttachOutput is whether to attach to STDOUT
-	// If false, stdout will not be attached
-	AttachOutput bool
-	// AttachError is whether to attach to STDERR
-	// If false, stdout will not be attached
-	AttachError bool
-	// AttachInput is whether to attach to STDIN
-	// If false, stdout will not be attached
-	AttachInput bool
-}
-
-// Attach attaches to a container
-func (c *Container) Attach(streams *AttachStreams, keys string, resize <-chan remotecommand.TerminalSize) error {
+// Attach attaches to a container.
+// This function returns when the attach finishes. It does not hold the lock for
+// the duration of its runtime, only using it at the beginning to verify state.
+func (c *Container) Attach(streams *define.AttachStreams, keys string, resize <-chan define.TerminalSize) error {
 	if !c.batched {
 		c.lock.Lock()
 		if err := c.syncContainer(); err != nil {
 			c.lock.Unlock()
 			return err
 		}
+		// We are NOT holding the lock for the duration of the function.
 		c.lock.Unlock()
 	}
 
-	if c.state.State != ContainerStateCreated &&
-		c.state.State != ContainerStateRunning &&
-		c.state.State != ContainerStateExited {
-		return errors.Wrapf(ErrCtrStateInvalid, "can only attach to created or running containers")
+	if !c.ensureState(define.ContainerStateCreated, define.ContainerStateRunning) {
+		return errors.Wrapf(define.ErrCtrStateInvalid, "can only attach to created or running containers")
 	}
-	defer c.newContainerEvent(events.Attach)
-	return c.attach(streams, keys, resize, false)
+
+	// HACK: This is really gross, but there isn't a better way without
+	// splitting attach into separate versions for StartAndAttach and normal
+	// attaching, and I really do not want to do that right now.
+	// Send a SIGWINCH after attach succeeds so that most programs will
+	// redraw the screen for the new attach session.
+	attachRdy := make(chan bool, 1)
+	if c.config.Spec.Process != nil && c.config.Spec.Process.Terminal {
+		go func() {
+			<-attachRdy
+			if err := c.ociRuntime.KillContainer(c, uint(signal.SIGWINCH), false); err != nil {
+				logrus.Warnf("Unable to send SIGWINCH to container %s after attach: %v", c.ID(), err)
+			}
+		}()
+	}
+
+	c.newContainerEvent(events.Attach)
+	return c.attach(streams, keys, resize, false, nil, attachRdy)
+}
+
+// HTTPAttach forwards an attach session over a hijacked HTTP session.
+// HTTPAttach will consume and close the included httpCon, which is expected to
+// be sourced from a hijacked HTTP connection.
+// The cancel channel is optional, and can be used to asynchronously cancel the
+// attach session.
+// The streams variable is only supported if the container was not a terminal,
+// and allows specifying which of the container's standard streams will be
+// forwarded to the client.
+// This function returns when the attach finishes. It does not hold the lock for
+// the duration of its runtime, only using it at the beginning to verify state.
+// The streamLogs parameter indicates that all the container's logs until present
+// will be streamed at the beginning of the attach.
+// The streamAttach parameter indicates that the attach itself will be streamed
+// over the socket; if this is not set, but streamLogs is, only the logs will be
+// sent.
+// At least one of streamAttach and streamLogs must be set.
+func (c *Container) HTTPAttach(r *http.Request, w http.ResponseWriter, streams *HTTPAttachStreams, detachKeys *string, cancel <-chan bool, streamAttach, streamLogs bool, hijackDone chan<- bool) error {
+	// Ensure we don't leak a goroutine if we exit before hijack completes.
+	defer func() {
+		close(hijackDone)
+	}()
+
+	if !c.batched {
+		c.lock.Lock()
+		if err := c.syncContainer(); err != nil {
+			c.lock.Unlock()
+
+			return err
+		}
+		// We are NOT holding the lock for the duration of the function.
+		c.lock.Unlock()
+	}
+
+	if !c.ensureState(define.ContainerStateCreated, define.ContainerStateRunning) {
+		return errors.Wrapf(define.ErrCtrStateInvalid, "can only attach to created or running containers")
+	}
+
+	if !streamAttach && !streamLogs {
+		return errors.Wrapf(define.ErrInvalidArg, "must specify at least one of stream or logs")
+	}
+
+	logrus.Infof("Performing HTTP Hijack attach to container %s", c.ID())
+
+	c.newContainerEvent(events.Attach)
+	return c.ociRuntime.HTTPAttach(c, r, w, streams, detachKeys, cancel, hijackDone, streamAttach, streamLogs)
+}
+
+// AttachResize resizes the container's terminal, which is displayed by Attach
+// and HTTPAttach.
+func (c *Container) AttachResize(newSize define.TerminalSize) error {
+	if !c.batched {
+		c.lock.Lock()
+		defer c.lock.Unlock()
+
+		if err := c.syncContainer(); err != nil {
+			return err
+		}
+	}
+
+	if !c.ensureState(define.ContainerStateCreated, define.ContainerStateRunning) {
+		return errors.Wrapf(define.ErrCtrStateInvalid, "can only resize created or running containers")
+	}
+
+	logrus.Infof("Resizing TTY of container %s", c.ID())
+
+	return c.ociRuntime.AttachResize(c, newSize)
 }
 
 // Mount mounts a container's filesystem on the host
@@ -405,6 +341,7 @@ func (c *Container) Mount() (string, error) {
 			return "", err
 		}
 	}
+
 	defer c.newContainerEvent(events.Mount)
 	return c.mount()
 }
@@ -419,20 +356,23 @@ func (c *Container) Unmount(force bool) error {
 			return err
 		}
 	}
-
 	if c.state.Mounted {
 		mounted, err := c.runtime.storageService.MountedContainerImage(c.ID())
 		if err != nil {
 			return errors.Wrapf(err, "can't determine how many times %s is mounted, refusing to unmount", c.ID())
 		}
 		if mounted == 1 {
-			if c.state.State == ContainerStateRunning || c.state.State == ContainerStatePaused {
-				return errors.Wrapf(ErrCtrStateInvalid, "cannot unmount storage for container %s as it is running or paused", c.ID())
+			if c.ensureState(define.ContainerStateRunning, define.ContainerStatePaused) {
+				return errors.Wrapf(define.ErrCtrStateInvalid, "cannot unmount storage for container %s as it is running or paused", c.ID())
 			}
-			if len(c.state.ExecSessions) != 0 {
-				return errors.Wrapf(ErrCtrStateInvalid, "container %s has active exec sessions, refusing to unmount", c.ID())
+			execSessions, err := c.getActiveExecSessions()
+			if err != nil {
+				return err
 			}
-			return errors.Wrapf(ErrInternal, "can't unmount %s last mount, it is still in use", c.ID())
+			if len(execSessions) != 0 {
+				return errors.Wrapf(define.ErrCtrStateInvalid, "container %s has active exec sessions, refusing to unmount", c.ID())
+			}
+			return errors.Wrapf(define.ErrInternal, "can't unmount %s last mount, it is still in use", c.ID())
 		}
 	}
 	defer c.newContainerEvent(events.Unmount)
@@ -450,11 +390,11 @@ func (c *Container) Pause() error {
 		}
 	}
 
-	if c.state.State == ContainerStatePaused {
-		return errors.Wrapf(ErrCtrStateInvalid, "%q is already paused", c.ID())
+	if c.state.State == define.ContainerStatePaused {
+		return errors.Wrapf(define.ErrCtrStateInvalid, "%q is already paused", c.ID())
 	}
-	if c.state.State != ContainerStateRunning {
-		return errors.Wrapf(ErrCtrStateInvalid, "%q is not running, can't pause", c.state.State)
+	if c.state.State != define.ContainerStateRunning {
+		return errors.Wrapf(define.ErrCtrStateInvalid, "%q is not running, can't pause", c.state.State)
 	}
 	defer c.newContainerEvent(events.Pause)
 	return c.pause()
@@ -471,8 +411,8 @@ func (c *Container) Unpause() error {
 		}
 	}
 
-	if c.state.State != ContainerStatePaused {
-		return errors.Wrapf(ErrCtrStateInvalid, "%q is not paused, can't unpause", c.ID())
+	if c.state.State != define.ContainerStatePaused {
+		return errors.Wrapf(define.ErrCtrStateInvalid, "%q is not paused, can't unpause", c.ID())
 	}
 	defer c.newContainerEvent(events.Unpause)
 	return c.unpause()
@@ -489,14 +429,19 @@ func (c *Container) Export(path string) error {
 			return err
 		}
 	}
-	defer c.newContainerEvent(events.Export)
+
+	if c.state.State == define.ContainerStateRemoving {
+		return errors.Wrapf(define.ErrCtrStateInvalid, "cannot mount container %s as it is being removed", c.ID())
+	}
+
+	defer c.newContainerEvent(events.Mount)
 	return c.export(path)
 }
 
 // AddArtifact creates and writes to an artifact file for the container
 func (c *Container) AddArtifact(name string, data []byte) error {
 	if !c.valid {
-		return ErrCtrRemoved
+		return define.ErrCtrRemoved
 	}
 
 	return ioutil.WriteFile(c.getArtifactPath(name), data, 0740)
@@ -505,7 +450,7 @@ func (c *Container) AddArtifact(name string, data []byte) error {
 // GetArtifact reads the specified artifact file from the container
 func (c *Container) GetArtifact(name string) ([]byte, error) {
 	if !c.valid {
-		return nil, ErrCtrRemoved
+		return nil, define.ErrCtrRemoved
 	}
 
 	return ioutil.ReadFile(c.getArtifactPath(name))
@@ -514,67 +459,135 @@ func (c *Container) GetArtifact(name string) ([]byte, error) {
 // RemoveArtifact deletes the specified artifacts file
 func (c *Container) RemoveArtifact(name string) error {
 	if !c.valid {
-		return ErrCtrRemoved
+		return define.ErrCtrRemoved
 	}
 
 	return os.Remove(c.getArtifactPath(name))
 }
 
-// Inspect a container for low-level information
-func (c *Container) Inspect(size bool) (*inspect.ContainerInspectData, error) {
-	if !c.batched {
-		c.lock.Lock()
-		defer c.lock.Unlock()
-
-		if err := c.syncContainer(); err != nil {
-			return nil, err
-		}
-	}
-
-	storeCtr, err := c.runtime.store.Container(c.ID())
-	if err != nil {
-		return nil, errors.Wrapf(err, "error getting container from store %q", c.ID())
-	}
-	layer, err := c.runtime.store.Layer(storeCtr.LayerID)
-	if err != nil {
-		return nil, errors.Wrapf(err, "error reading information about layer %q", storeCtr.LayerID)
-	}
-	driverData, err := driver.GetDriverData(c.runtime.store, layer.ID)
-	if err != nil {
-		return nil, errors.Wrapf(err, "error getting graph driver info %q", c.ID())
-	}
-	return c.getContainerInspectData(size, driverData)
-}
-
 // Wait blocks until the container exits and returns its exit code.
-func (c *Container) Wait() (int32, error) {
-	return c.WaitWithInterval(DefaultWaitInterval)
+func (c *Container) Wait(ctx context.Context) (int32, error) {
+	return c.WaitWithInterval(ctx, DefaultWaitInterval)
 }
 
 // WaitWithInterval blocks until the container to exit and returns its exit
 // code. The argument is the interval at which checks the container's status.
-func (c *Container) WaitWithInterval(waitTimeout time.Duration) (int32, error) {
+func (c *Container) WaitWithInterval(ctx context.Context, waitTimeout time.Duration) (int32, error) {
 	if !c.valid {
-		return -1, ErrCtrRemoved
+		return -1, define.ErrCtrRemoved
 	}
-	err := wait.PollImmediateInfinite(waitTimeout,
-		func() (bool, error) {
-			logrus.Debugf("Checking container %s status...", c.ID())
-			stopped, err := c.isStopped()
-			if err != nil {
-				return false, err
-			}
-			if !stopped {
-				return false, nil
-			}
-			return true, nil
-		},
-	)
+
+	exitFile, err := c.exitFilePath()
 	if err != nil {
-		return 0, err
+		return -1, err
 	}
-	exitCode := c.state.ExitCode
-	return exitCode, nil
+	chWait := make(chan error, 1)
+
+	go func() {
+		<-ctx.Done()
+		chWait <- define.ErrCanceled
+	}()
+
+	for {
+		// ignore errors here (with exception of cancellation), it is only used to avoid waiting
+		// too long.
+		_, e := WaitForFile(exitFile, chWait, waitTimeout)
+		if e == define.ErrCanceled {
+			return -1, define.ErrCanceled
+		}
+
+		stopped, code, err := c.isStopped()
+		if err != nil {
+			return -1, err
+		}
+		if stopped {
+			return code, nil
+		}
+	}
+}
+
+type waitResult struct {
+	code int32
+	err  error
+}
+
+func (c *Container) WaitForConditionWithInterval(ctx context.Context, waitTimeout time.Duration, conditions ...define.ContainerStatus) (int32, error) {
+	if !c.valid {
+		return -1, define.ErrCtrRemoved
+	}
+
+	if len(conditions) == 0 {
+		panic("at least one condition should be passed")
+	}
+
+	ctx, cancelFn := context.WithCancel(ctx)
+	defer cancelFn()
+
+	resultChan := make(chan waitResult)
+	waitForExit := false
+	wantedStates := make(map[define.ContainerStatus]bool, len(conditions))
+
+	for _, condition := range conditions {
+		if condition == define.ContainerStateStopped || condition == define.ContainerStateExited {
+			waitForExit = true
+			continue
+		}
+		wantedStates[condition] = true
+	}
+
+	trySend := func(code int32, err error) {
+		select {
+		case resultChan <- waitResult{code, err}:
+		case <-ctx.Done():
+		}
+	}
+
+	var wg sync.WaitGroup
+
+	if waitForExit {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			code, err := c.WaitWithInterval(ctx, waitTimeout)
+			trySend(code, err)
+		}()
+	}
+
+	if len(wantedStates) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for {
+				state, err := c.State()
+				if err != nil {
+					trySend(-1, err)
+					return
+				}
+				if _, found := wantedStates[state]; found {
+					trySend(-1, nil)
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(waitTimeout):
+					continue
+				}
+			}
+		}()
+	}
+
+	var result waitResult
+	select {
+	case result = <-resultChan:
+		cancelFn()
+	case <-ctx.Done():
+		result = waitResult{-1, define.ErrCanceled}
+	}
+	wg.Wait()
+	return result.code, result.err
 }
 
 // Cleanup unmounts all mount points in container and cleans up container storage
@@ -583,27 +596,46 @@ func (c *Container) Cleanup(ctx context.Context) error {
 	if !c.batched {
 		c.lock.Lock()
 		defer c.lock.Unlock()
+
 		if err := c.syncContainer(); err != nil {
 			return err
 		}
 	}
 
 	// Check if state is good
-	if c.state.State == ContainerStateRunning || c.state.State == ContainerStatePaused {
-		return errors.Wrapf(ErrCtrStateInvalid, "container %s is running or paused, refusing to clean up", c.ID())
+	if !c.ensureState(define.ContainerStateConfigured, define.ContainerStateCreated, define.ContainerStateStopped, define.ContainerStateStopping, define.ContainerStateExited) {
+		return errors.Wrapf(define.ErrCtrStateInvalid, "container %s is running or paused, refusing to clean up", c.ID())
 	}
 
-	// Check if we have active exec sessions
-	if len(c.state.ExecSessions) != 0 {
-		return errors.Wrapf(ErrCtrStateInvalid, "container %s has active exec sessions, refusing to clean up", c.ID())
+	// Handle restart policy.
+	// Returns a bool indicating whether we actually restarted.
+	// If we did, don't proceed to cleanup - just exit.
+	didRestart, err := c.handleRestartPolicy(ctx)
+	if err != nil {
+		return err
 	}
+	if didRestart {
+		return nil
+	}
+
+	// If we didn't restart, we perform a normal cleanup
+
+	// Check for running exec sessions
+	sessions, err := c.getActiveExecSessions()
+	if err != nil {
+		return err
+	}
+	if len(sessions) > 0 {
+		return errors.Wrapf(define.ErrCtrStateInvalid, "container %s has active exec sessions, refusing to clean up", c.ID())
+	}
+
 	defer c.newContainerEvent(events.Cleanup)
 	return c.cleanup(ctx)
 }
 
 // Batch starts a batch operation on the given container
 // All commands in the passed function will execute under the same lock and
-// without syncronyzing state after each operation
+// without synchronizing state after each operation
 // This will result in substantial performance benefits when running numerous
 // commands on the same container
 // Note that the container passed into the Batch function cannot be removed
@@ -626,6 +658,7 @@ func (c *Container) Batch(batchFunc func(*Container) error) error {
 	newCtr.config = c.config
 	newCtr.state = c.state
 	newCtr.runtime = c.runtime
+	newCtr.ociRuntime = c.ociRuntime
 	newCtr.lock = c.lock
 	newCtr.valid = true
 
@@ -653,11 +686,9 @@ func (c *Container) Sync() error {
 
 	// If runtime knows about the container, update its status in runtime
 	// And then save back to disk
-	if (c.state.State != ContainerStateUnknown) &&
-		(c.state.State != ContainerStateConfigured) &&
-		(c.state.State != ContainerStateExited) {
+	if c.ensureState(define.ContainerStateCreated, define.ContainerStateRunning, define.ContainerStatePaused, define.ContainerStateStopped) {
 		oldState := c.state.State
-		if err := c.runtime.ociRuntime.updateContainerStatus(c, true); err != nil {
+		if err := c.ociRuntime.UpdateContainerStatus(c); err != nil {
 			return err
 		}
 		// Only save back to DB if state changed
@@ -667,13 +698,21 @@ func (c *Container) Sync() error {
 			}
 		}
 	}
+
 	defer c.newContainerEvent(events.Sync)
 	return nil
 }
 
-// Refresh refreshes a container's state in the database, restarting the
-// container if it is running
-func (c *Container) Refresh(ctx context.Context) error {
+// ReloadNetwork reconfigures the container's network.
+// Technically speaking, it will tear down and then reconfigure the container's
+// network namespace, which will result in all firewall rules being recreated.
+// It is mostly intended to be used in cases where the system firewall has been
+// reloaded, and existing rules have been wiped out. It is expected that some
+// downtime will result, as the rules are destroyed as part of this process.
+// At present, this only works on root containers; it may be expanded to restart
+// slirp4netns in the future to work with rootless containers as well.
+// Requires that the container must be running or created.
+func (c *Container) ReloadNetwork() error {
 	if !c.batched {
 		c.lock.Lock()
 		defer c.lock.Unlock()
@@ -683,96 +722,18 @@ func (c *Container) Refresh(ctx context.Context) error {
 		}
 	}
 
-	wasCreated := false
-	if c.state.State == ContainerStateCreated {
-		wasCreated = true
-	}
-	wasRunning := false
-	if c.state.State == ContainerStateRunning {
-		wasRunning = true
-	}
-	wasPaused := false
-	if c.state.State == ContainerStatePaused {
-		wasPaused = true
+	if !c.ensureState(define.ContainerStateCreated, define.ContainerStateRunning) {
+		return errors.Wrapf(define.ErrCtrStateInvalid, "cannot reload network unless container network has been configured")
 	}
 
-	// First, unpause the container if it's paused
-	if c.state.State == ContainerStatePaused {
-		if err := c.unpause(); err != nil {
-			return err
-		}
-	}
+	return c.reloadNetwork()
+}
 
-	// Next, if the container is running, stop it
-	if c.state.State == ContainerStateRunning {
-		if err := c.stop(c.config.StopTimeout); err != nil {
-			return err
-		}
-	}
-
-	// If there are active exec sessions, we need to kill them
-	if len(c.state.ExecSessions) > 0 {
-		logrus.Infof("Killing %d exec sessions in container %s. They will not be restored after refresh.",
-			len(c.state.ExecSessions), c.ID())
-		if err := c.runtime.ociRuntime.execStopContainer(c, c.config.StopTimeout); err != nil {
-			return err
-		}
-	}
-
-	// If the container is in ContainerStateStopped, we need to delete it
-	// from the runtime and clear conmon state
-	if c.state.State == ContainerStateStopped {
-		if err := c.delete(ctx); err != nil {
-			return err
-		}
-		if err := c.removeConmonFiles(); err != nil {
-			return err
-		}
-	}
-
-	// Fire cleanup code one more time unconditionally to ensure we are good
-	// to refresh
-	if err := c.cleanup(ctx); err != nil {
-		return err
-	}
-
-	logrus.Debugf("Resetting state of container %s", c.ID())
-
-	// We've finished unwinding the container back to its initial state
-	// Now safe to refresh container state
-	if err := resetState(c.state); err != nil {
-		return errors.Wrapf(err, "error resetting state of container %s", c.ID())
-	}
-	if err := c.refresh(); err != nil {
-		return err
-	}
-
-	logrus.Debugf("Successfully refresh container %s state", c.ID())
-
-	// Initialize the container if it was created in runc
-	if wasCreated || wasRunning || wasPaused {
-		if err := c.prepare(); err != nil {
-			return err
-		}
-		if err := c.init(ctx); err != nil {
-			return err
-		}
-	}
-
-	// If the container was running before, start it
-	if wasRunning || wasPaused {
-		if err := c.start(); err != nil {
-			return err
-		}
-	}
-
-	// If the container was paused before, re-pause it
-	if wasPaused {
-		if err := c.pause(); err != nil {
-			return err
-		}
-	}
-	return nil
+// Refresh is DEPRECATED and REMOVED.
+func (c *Container) Refresh(ctx context.Context) error {
+	// This has been deprecated for a long while, and is in the process of
+	// being removed.
+	return define.ErrNotImplemented
 }
 
 // ContainerCheckpointOptions is a struct used to pass the parameters
@@ -786,11 +747,57 @@ type ContainerCheckpointOptions struct {
 	// TCPEstablished tells the API to checkpoint a container
 	// even if it contains established TCP connections
 	TCPEstablished bool
+	// TargetFile tells the API to read (or write) the checkpoint image
+	// from (or to) the filename set in TargetFile
+	TargetFile string
+	// Name tells the API that during restore from an exported
+	// checkpoint archive a new name should be used for the
+	// restored container
+	Name string
+	// IgnoreRootfs tells the API to not export changes to
+	// the container's root file-system (or to not import)
+	IgnoreRootfs bool
+	// IgnoreStaticIP tells the API to ignore the IP set
+	// during 'podman run' with '--ip'. This is especially
+	// important to be able to restore a container multiple
+	// times with '--import --name'.
+	IgnoreStaticIP bool
+	// IgnoreStaticMAC tells the API to ignore the MAC set
+	// during 'podman run' with '--mac-address'. This is especially
+	// important to be able to restore a container multiple
+	// times with '--import --name'.
+	IgnoreStaticMAC bool
+	// IgnoreVolumes tells the API to not export or not to import
+	// the content of volumes associated with the container
+	IgnoreVolumes bool
+	// Pre Checkpoint container and leave container running
+	PreCheckPoint bool
+	// Dump container with Pre Checkpoint images
+	WithPrevious bool
+	// ImportPrevious tells the API to restore container with two
+	// images. One is TargetFile, the other is ImportPrevious.
+	ImportPrevious string
+	// Compression tells the API which compression to use for
+	// the exported checkpoint archive.
+	Compression archive.Compression
 }
 
 // Checkpoint checkpoints a container
 func (c *Container) Checkpoint(ctx context.Context, options ContainerCheckpointOptions) error {
 	logrus.Debugf("Trying to checkpoint container %s", c.ID())
+
+	if options.TargetFile != "" {
+		if err := c.prepareCheckpointExport(); err != nil {
+			return err
+		}
+	}
+
+	if options.WithPrevious {
+		if err := c.canWithPrevious(); err != nil {
+			return err
+		}
+	}
+
 	if !c.batched {
 		c.lock.Lock()
 		defer c.lock.Unlock()
@@ -799,12 +806,11 @@ func (c *Container) Checkpoint(ctx context.Context, options ContainerCheckpointO
 			return err
 		}
 	}
-	defer c.newContainerEvent(events.Checkpoint)
 	return c.checkpoint(ctx, options)
 }
 
 // Restore restores a container
-func (c *Container) Restore(ctx context.Context, options ContainerCheckpointOptions) (err error) {
+func (c *Container) Restore(ctx context.Context, options ContainerCheckpointOptions) error {
 	logrus.Debugf("Trying to restore container %s", c.ID())
 	if !c.batched {
 		c.lock.Lock()
@@ -816,4 +822,75 @@ func (c *Container) Restore(ctx context.Context, options ContainerCheckpointOpti
 	}
 	defer c.newContainerEvent(events.Restore)
 	return c.restore(ctx, options)
+}
+
+// Indicate whether or not the container should restart
+func (c *Container) ShouldRestart(ctx context.Context) bool {
+	logrus.Debugf("Checking if container %s should restart", c.ID())
+	if !c.batched {
+		c.lock.Lock()
+		defer c.lock.Unlock()
+
+		if err := c.syncContainer(); err != nil {
+			return false
+		}
+	}
+	return c.shouldRestart()
+}
+
+// CopyFromArchive copies the contents from the specified tarStream to path
+// *inside* the container.
+func (c *Container) CopyFromArchive(ctx context.Context, containerPath string, tarStream io.Reader) (func() error, error) {
+	if !c.batched {
+		c.lock.Lock()
+		defer c.lock.Unlock()
+
+		if err := c.syncContainer(); err != nil {
+			return nil, err
+		}
+	}
+
+	return c.copyFromArchive(ctx, containerPath, tarStream)
+}
+
+// CopyToArchive copies the contents from the specified path *inside* the
+// container to the tarStream.
+func (c *Container) CopyToArchive(ctx context.Context, containerPath string, tarStream io.Writer) (func() error, error) {
+	if !c.batched {
+		c.lock.Lock()
+		defer c.lock.Unlock()
+
+		if err := c.syncContainer(); err != nil {
+			return nil, err
+		}
+	}
+
+	return c.copyToArchive(ctx, containerPath, tarStream)
+}
+
+// Stat the specified path *inside* the container and return a file info.
+func (c *Container) Stat(ctx context.Context, containerPath string) (*define.FileInfo, error) {
+	if !c.batched {
+		c.lock.Lock()
+		defer c.lock.Unlock()
+
+		if err := c.syncContainer(); err != nil {
+			return nil, err
+		}
+	}
+
+	var mountPoint string
+	var err error
+	if c.state.Mounted {
+		mountPoint = c.state.Mountpoint
+	} else {
+		mountPoint, err = c.mount()
+		if err != nil {
+			return nil, err
+		}
+		defer c.unmount(false)
+	}
+
+	info, _, _, err := c.stat(ctx, mountPoint, containerPath)
+	return info, err
 }

@@ -1,11 +1,11 @@
 package storage
 
 import (
-	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/containers/storage/pkg/idtools"
@@ -114,6 +114,7 @@ type containerStore struct {
 	byid       map[string]*Container
 	bylayer    map[string]*Container
 	byname     map[string]*Container
+	loadMut    sync.Mutex
 }
 
 func copyContainer(c *Container) *Container {
@@ -148,10 +149,20 @@ func (c *Container) ProcessLabel() string {
 }
 
 func (c *Container) MountOpts() []string {
-	if mountOpts, ok := c.Flags["MountOpts"].([]string); ok {
+	switch c.Flags["MountOpts"].(type) {
+	case []string:
+		return c.Flags["MountOpts"].([]string)
+	case []interface{}:
+		var mountOpts []string
+		for _, v := range c.Flags["MountOpts"].([]interface{}) {
+			if flag, ok := v.(string); ok {
+				mountOpts = append(mountOpts, flag)
+			}
+		}
 		return mountOpts
+	default:
+		return nil
 	}
-	return nil
 }
 
 func (r *containerStore) Containers() ([]Container, error) {
@@ -302,6 +313,9 @@ func (r *containerStore) Create(id string, names []string, image, layer, metadat
 	}
 	if options.MountOpts != nil {
 		options.Flags["MountOpts"] = append([]string{}, options.MountOpts...)
+	}
+	if options.Volatile {
+		options.Flags["Volatile"] = true
 	}
 	names = dedupeNames(names)
 	for _, name := range names {
@@ -572,9 +586,14 @@ func (r *containerStore) Lock() {
 	r.lockfile.Lock()
 }
 
+func (r *containerStore) RecursiveLock() {
+	r.lockfile.RecursiveLock()
+}
+
 func (r *containerStore) RLock() {
 	r.lockfile.RLock()
 }
+
 func (r *containerStore) Unlock() {
 	r.lockfile.Unlock()
 }
@@ -597,4 +616,15 @@ func (r *containerStore) TouchedSince(when time.Time) bool {
 
 func (r *containerStore) Locked() bool {
 	return r.lockfile.Locked()
+}
+
+func (r *containerStore) ReloadIfChanged() error {
+	r.loadMut.Lock()
+	defer r.loadMut.Unlock()
+
+	modified, err := r.Modified()
+	if err == nil && modified {
+		return r.Load()
+	}
+	return err
 }

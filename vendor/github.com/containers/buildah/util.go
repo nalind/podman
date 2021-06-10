@@ -3,19 +3,18 @@ package buildah
 import (
 	"io"
 	"os"
+	"path/filepath"
+	"sync"
 
-	"github.com/containers/image/docker/reference"
-	"github.com/containers/image/pkg/sysregistries"
-	"github.com/containers/image/pkg/sysregistriesv2"
-	"github.com/containers/image/types"
+	"github.com/containers/buildah/copier"
+	"github.com/containers/image/v5/docker/reference"
+	"github.com/containers/image/v5/pkg/sysregistriesv2"
+	"github.com/containers/image/v5/types"
 	"github.com/containers/storage"
-	"github.com/containers/storage/pkg/archive"
-	"github.com/containers/storage/pkg/chrootarchive"
 	"github.com/containers/storage/pkg/idtools"
 	"github.com/containers/storage/pkg/reexec"
-	"github.com/opencontainers/image-spec/specs-go/v1"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	rspec "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/opencontainers/selinux/go-selinux"
 	"github.com/opencontainers/selinux/go-selinux/label"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -104,53 +103,21 @@ func convertRuntimeIDMaps(UIDMap, GIDMap []rspec.LinuxIDMapping) ([]idtools.IDMa
 	return uidmap, gidmap
 }
 
-// copyFileWithTar returns a function which copies a single file from outside
-// of any container into our working container, mapping permissions using the
-// container's ID maps, possibly overridden using the passed-in chownOpts
-func (b *Builder) copyFileWithTar(chownOpts *idtools.IDPair, hasher io.Writer) func(src, dest string) error {
-	convertedUIDMap, convertedGIDMap := convertRuntimeIDMaps(b.IDMappingOptions.UIDMap, b.IDMappingOptions.GIDMap)
-	return chrootarchive.CopyFileWithTarAndChown(chownOpts, hasher, convertedUIDMap, convertedGIDMap)
-}
-
-// copyWithTar returns a function which copies a directory tree from outside of
-// any container into our working container, mapping permissions using the
-// container's ID maps, possibly overridden using the passed-in chownOpts
-func (b *Builder) copyWithTar(chownOpts *idtools.IDPair, hasher io.Writer) func(src, dest string) error {
-	convertedUIDMap, convertedGIDMap := convertRuntimeIDMaps(b.IDMappingOptions.UIDMap, b.IDMappingOptions.GIDMap)
-	return chrootarchive.CopyWithTarAndChown(chownOpts, hasher, convertedUIDMap, convertedGIDMap)
-}
-
-// untarPath returns a function which extracts an archive in a specified
-// location into our working container, mapping permissions using the
-// container's ID maps, possibly overridden using the passed-in chownOpts
-func (b *Builder) untarPath(chownOpts *idtools.IDPair, hasher io.Writer) func(src, dest string) error {
-	convertedUIDMap, convertedGIDMap := convertRuntimeIDMaps(b.IDMappingOptions.UIDMap, b.IDMappingOptions.GIDMap)
-	return chrootarchive.UntarPathAndChown(chownOpts, hasher, convertedUIDMap, convertedGIDMap)
-}
-
-// tarPath returns a function which creates an archive of a specified
-// location in the container's filesystem, mapping permissions using the
-// container's ID maps
-func (b *Builder) tarPath() func(path string) (io.ReadCloser, error) {
-	convertedUIDMap, convertedGIDMap := convertRuntimeIDMaps(b.IDMappingOptions.UIDMap, b.IDMappingOptions.GIDMap)
-	return archive.TarPath(convertedUIDMap, convertedGIDMap)
-}
-
 // isRegistryBlocked checks if the named registry is marked as blocked
 func isRegistryBlocked(registry string, sc *types.SystemContext) (bool, error) {
 	reginfo, err := sysregistriesv2.FindRegistry(sc, registry)
 	if err != nil {
-		return false, errors.Wrapf(err, "unable to parse the registries configuration (%s)", sysregistries.RegistriesConfPath(sc))
+		return false, errors.Wrapf(err, "unable to parse the registries configuration (%s)", sysregistriesv2.ConfigPath(sc))
 	}
 	if reginfo != nil {
 		if reginfo.Blocked {
-			logrus.Debugf("registry %q is marked as blocked in registries configuration %q", registry, sysregistries.RegistriesConfPath(sc))
+			logrus.Debugf("registry %q is marked as blocked in registries configuration %q", registry, sysregistriesv2.ConfigPath(sc))
 		} else {
-			logrus.Debugf("registry %q is not marked as blocked in registries configuration %q", registry, sysregistries.RegistriesConfPath(sc))
+			logrus.Debugf("registry %q is not marked as blocked in registries configuration %q", registry, sysregistriesv2.ConfigPath(sc))
 		}
 		return reginfo.Blocked, nil
 	}
-	logrus.Debugf("registry %q is not listed in registries configuration %q, assuming it's not blocked", registry, sysregistries.RegistriesConfPath(sc))
+	logrus.Debugf("registry %q is not listed in registries configuration %q, assuming it's not blocked", registry, sysregistriesv2.ConfigPath(sc))
 	return false, nil
 }
 
@@ -177,10 +144,10 @@ func isReferenceBlocked(ref types.ImageReference, sc *types.SystemContext) (bool
 	return false, nil
 }
 
-// ReserveSELinuxLabels reads containers storage and reserves SELinux containers
-// fall all existing buildah containers
+// ReserveSELinuxLabels reads containers storage and reserves SELinux contexts
+// which are already being used by buildah containers.
 func ReserveSELinuxLabels(store storage.Store, id string) error {
-	if selinux.GetEnabled() {
+	if selinuxGetEnabled() {
 		containers, err := store.Containers()
 		if err != nil {
 			return errors.Wrapf(err, "error getting list of containers")
@@ -205,6 +172,56 @@ func ReserveSELinuxLabels(store storage.Store, id string) error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// IsContainer identifies if the specified container id is a buildah container
+// in the specified store.
+func IsContainer(id string, store storage.Store) (bool, error) {
+	cdir, err := store.ContainerDirectory(id)
+	if err != nil {
+		return false, err
+	}
+	// Assuming that if the stateFile exists, that this is a Buildah
+	// container.
+	if _, err = os.Stat(filepath.Join(cdir, stateFile)); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// Copy content from the directory "src" to the directory "dest", ensuring that
+// content from outside of "root" (which is a parent of "src" or "src" itself)
+// isn't read.
+func extractWithTar(root, src, dest string) error {
+	var getErr, putErr error
+	var wg sync.WaitGroup
+
+	pipeReader, pipeWriter := io.Pipe()
+
+	wg.Add(1)
+	go func() {
+		getErr = copier.Get(root, src, copier.GetOptions{}, []string{"."}, pipeWriter)
+		pipeWriter.Close()
+		wg.Done()
+	}()
+	wg.Add(1)
+	go func() {
+		putErr = copier.Put(dest, dest, copier.PutOptions{}, pipeReader)
+		pipeReader.Close()
+		wg.Done()
+	}()
+	wg.Wait()
+
+	if getErr != nil {
+		return errors.Wrapf(getErr, "error reading %q", src)
+	}
+	if putErr != nil {
+		return errors.Wrapf(putErr, "error copying contents of %q to %q", src, dest)
 	}
 	return nil
 }

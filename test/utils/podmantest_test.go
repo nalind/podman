@@ -3,7 +3,7 @@ package utils_test
 import (
 	"os"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -23,7 +23,7 @@ var _ = Describe("PodmanTest test", func() {
 		FakeOutputs["check"] = []string{"check"}
 		os.Setenv("HOOK_OPTION", "hook_option")
 		env := os.Environ()
-		session := podmanTest.PodmanAsUserBase([]string{"check"}, 1000, 1000, "", env)
+		session := podmanTest.PodmanAsUserBase([]string{"check"}, 1000, 1000, "", env, true, false, nil)
 		os.Unsetenv("HOOK_OPTION")
 		session.WaitWithDefaultTimeout()
 		Expect(session.Command.Process).ShouldNot(BeNil())

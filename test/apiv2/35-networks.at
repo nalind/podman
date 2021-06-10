@@ -1,0 +1,145 @@
+# -*- sh -*-
+#
+# network-related tests
+#
+
+t GET networks/non-existing-network 404 \
+  .cause='network not found'
+
+t POST libpod/networks/create?name=network1 200 \
+  .Filename~.*/network1\\.conflist
+
+# --data '{"Subnet":{"IP":"10.10.254.0","Mask":[255,255,255,0]},"Labels":{"abc":"val"}}'
+t POST libpod/networks/create?name=network2 \
+  Subnet='{"IP":"10.10.254.0","Mask":[255,255,255,0]}' \
+  Labels='{"abc":"val"}' \
+  200 \
+  .Filename~.*/network2\\.conflist
+
+# --data '{"Subnet":{"IP":"10.10.133.0","Mask":[255,255,255,0]},"Labels":{"xyz":"val"}}'
+t POST libpod/networks/create?name=network3 \
+  Subnet='{"IP":"10.10.133.0","Mask":[255,255,255,0]}' \
+  Labels='{"xyz":"val"}' \
+  200 \
+  .Filename~.*/network3\\.conflist
+
+# --data '{"Subnet":{"IP":"10.10.134.0","Mask":[255,255,255,0]},"Labels":{"zaq":"val"}}'
+t POST libpod/networks/create?name=network4 \
+  Subnet='{"IP":"10.10.134.0","Mask":[255,255,255,0]}' \
+  Labels='{"zaq":"val"}' \
+  200 \
+  .Filename~.*/network4\\.conflist
+
+# test for empty mask
+t POST libpod/networks/create Subnet='{"IP":"10.10.1.0","Mask":[]}' 500 \
+  .cause~'.*cannot be empty'
+# test for invalid mask
+t POST libpod/networks/create Subnet='{"IP":"10.10.1.0","Mask":[0,255,255,0]}' 500 \
+  .cause~'.*mask is invalid'
+
+# network list
+t GET libpod/networks/json 200
+t GET libpod/networks/json?filters='{"name":["network1"]}' 200 \
+  length=1 \
+  .[0].Name=network1
+t GET networks 200
+
+#inspect network
+t GET libpod/networks/network1/json 200 \
+  .name="network1"
+
+#network list docker endpoint
+t GET networks?filters='{"name":["network1","network2"]}' 200 \
+  length=2
+t GET networks?filters='{"name":["network"]}' 200 \
+  length=4
+t GET networks?filters='{"label":["abc"]}' 200 \
+  length=1
+# old docker filter type see #9526
+t GET networks?filters='{"label":{"abc":true}}' 200 \
+  length=1
+t GET networks?filters='{"id":["a7662f44d65029fd4635c91feea3d720a57cef52e2a9fcc7772b69072cc1ccd1"]}' 200 \
+  length=1 \
+  .[0].Name=network1 \
+  .[0].Id=a7662f44d65029fd4635c91feea3d720a57cef52e2a9fcc7772b69072cc1ccd1
+# invalid filter
+t GET networks?filters='{"dangling":["1"]}' 500 \
+  .cause='invalid filter "dangling"'
+# (#9293 with no networks the endpoint should return empty array instead of null)
+t GET networks?filters='{"name":["doesnotexists"]}' 200 \
+  "[]"
+
+# network inspect docker
+t GET networks/a7662f44d65029fd4635c91feea3d720a57cef52e2a9fcc7772b69072cc1ccd1 200 \
+  .Name=network1 \
+  .Id=a7662f44d65029fd4635c91feea3d720a57cef52e2a9fcc7772b69072cc1ccd1 \
+  .Scope=local
+
+# network create docker
+t POST networks/create Name=net3\ IPAM='{"Config":[]}' 201
+# network delete docker
+t DELETE networks/net3 204
+
+#compat api list networks sanity checks
+t GET networks?filters='garb1age}' 500 \
+    .cause="invalid character 'g' looking for beginning of value"
+t GET networks?filters='{"label":["testl' 500 \
+    .cause="unexpected end of JSON input"
+
+#libpod api list networks sanity checks
+t GET libpod/networks/json?filters='garb1age}' 500 \
+    .cause="invalid character 'g' looking for beginning of value"
+t GET libpod/networks/json?filters='{"label":["testl' 500 \
+    .cause="unexpected end of JSON input"
+
+# Prune networks compat api
+t POST networks/prune?filters='garb1age}' 500 \
+    .cause="invalid character 'g' looking for beginning of value"
+t POST networks/prune?filters='{"label":["tes' 500 \
+    .cause="unexpected end of JSON input"
+
+# Prune networks libpod api
+t POST libpod/networks/prune?filters='garb1age}' 500 \
+    .cause="invalid character 'g' looking for beginning of value"
+t POST libpod/networks/prune?filters='{"label":["tes' 500 \
+    .cause="unexpected end of JSON input"
+
+# prune networks using filter - compat api
+t POST networks/prune?filters='{"label":["xyz"]}' 200
+t GET networks?filters='{"label":["xyz"]}' 200 length=0
+
+# prune networks using filter - libpod api
+t POST libpod/networks/prune?filters='{"label":["zaq=val"]}' 200
+t GET libpod/networks/json?filters='{"label":["zaq=val"]}' 200 length=0
+
+# clean the network
+t DELETE libpod/networks/network1 200 \
+  .[0].Name~network1 \
+  .[0].Err=null
+t DELETE libpod/networks/network2 200 \
+  .[0].Name~network2 \
+  .[0].Err=null
+
+# test until filter - libpod api
+podman network create network5 --label xyz
+
+# with date way back in the past, network should not be deleted
+t POST libpod/networks/prune?filters='{"until":["500000"]}' 200
+t GET libpod/networks/json?filters='{"label":["xyz"]}' 200 length=1
+
+# with date far in the future, network should be deleted
+t POST libpod/networks/prune?filters='{"until":["5000000000"]}' 200
+t GET libpod/networks/json?filters='{"label":["xyz"]}' 200 length=0
+
+# test until filter - compat api
+podman network create network6 --label zaq
+
+# with date way back in the past, network should not be deleted
+t POST networks/prune?filters='{"until":["500000"]}' 200
+t GET networks?filters='{"label":["zaq"]}' 200 length=1
+
+# with date far in the future, network should be deleted
+t POST networks/prune?filters='{"until":["5000000000"]}' 200
+t GET networks?filters='{"label":["zaq"]}' 200 length=0
+
+# vim: filetype=sh

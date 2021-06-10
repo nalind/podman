@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -23,7 +23,7 @@ var _ = Describe("Podman export", func() {
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.RestoreAllArtifacts()
+		podmanTest.SeedImages()
 	})
 
 	AfterEach(func() {
@@ -34,7 +34,6 @@ var _ = Describe("Podman export", func() {
 	})
 
 	It("podman export output flag", func() {
-		SkipIfRemote()
 		_, ec, cid := podmanTest.RunLsContainer("")
 		Expect(ec).To(Equal(0))
 
@@ -50,7 +49,6 @@ var _ = Describe("Podman export", func() {
 	})
 
 	It("podman container export output flag", func() {
-		SkipIfRemote()
 		_, ec, cid := podmanTest.RunLsContainer("")
 		Expect(ec).To(Equal(0))
 
@@ -72,6 +70,6 @@ var _ = Describe("Podman export", func() {
 		outfile := filepath.Join(podmanTest.TempDir, "container:with:colon.tar")
 		result := podmanTest.Podman([]string{"export", "-o", outfile, cid})
 		result.WaitWithDefaultTimeout()
-		Expect(result.ExitCode()).To(Not(Equal(0)))
+		Expect(result).To(ExitWithError())
 	})
 })

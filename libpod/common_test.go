@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/containers/libpod/libpod/lock"
+	"github.com/containers/common/pkg/config"
+	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v3/libpod/lock"
 	"github.com/cri-o/ocicni/pkg/ocicni"
 	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/stretchr/testify/assert"
@@ -17,39 +19,46 @@ import (
 func getTestContainer(id, name string, manager lock.Manager) (*Container, error) {
 	ctr := &Container{
 		config: &ContainerConfig{
-			ID:              id,
-			Name:            name,
-			RootfsImageID:   id,
-			RootfsImageName: "testimg",
-			ImageVolumes:    true,
-			StaticDir:       "/does/not/exist/",
-			LogPath:         "/does/not/exist/",
-			Stdin:           true,
-			Labels:          map[string]string{"a": "b", "c": "d"},
-			StopSignal:      0,
-			StopTimeout:     0,
-			CreatedTime:     time.Now(),
-			Privileged:      true,
-			Mounts:          []string{"/does/not/exist"},
-			DNSServer:       []net.IP{net.ParseIP("192.168.1.1"), net.ParseIP("192.168.2.2")},
-			DNSSearch:       []string{"example.com", "example.example.com"},
-			PortMappings: []ocicni.PortMapping{
-				{
-					HostPort:      80,
-					ContainerPort: 90,
-					Protocol:      "tcp",
-					HostIP:        "192.168.3.3",
-				},
-				{
-					HostPort:      100,
-					ContainerPort: 110,
-					Protocol:      "udp",
-					HostIP:        "192.168.4.4",
+			ID:   id,
+			Name: name,
+			ContainerRootFSConfig: ContainerRootFSConfig{
+				RootfsImageID:   id,
+				RootfsImageName: "testimg",
+				StaticDir:       "/does/not/exist/",
+				Mounts:          []string{"/does/not/exist"},
+			},
+			ContainerMiscConfig: ContainerMiscConfig{
+				LogPath:     "/does/not/exist/",
+				Stdin:       true,
+				Labels:      map[string]string{"a": "b", "c": "d"},
+				StopSignal:  0,
+				StopTimeout: 0,
+				CreatedTime: time.Now(),
+			},
+			ContainerSecurityConfig: ContainerSecurityConfig{
+				Privileged: true,
+			},
+			ContainerNetworkConfig: ContainerNetworkConfig{
+				DNSServer: []net.IP{net.ParseIP("192.168.1.1"), net.ParseIP("192.168.2.2")},
+				DNSSearch: []string{"example.com", "example.example.com"},
+				PortMappings: []ocicni.PortMapping{
+					{
+						HostPort:      80,
+						ContainerPort: 90,
+						Protocol:      "tcp",
+						HostIP:        "192.168.3.3",
+					},
+					{
+						HostPort:      100,
+						ContainerPort: 110,
+						Protocol:      "udp",
+						HostIP:        "192.168.4.4",
+					},
 				},
 			},
 		},
 		state: &ContainerState{
-			State:      ContainerStateRunning,
+			State:      define.ContainerStateRunning,
 			ConfigPath: "/does/not/exist/specs/" + id,
 			RunDir:     "/does/not/exist/tmp/",
 			Mounted:    true,
@@ -57,14 +66,12 @@ func getTestContainer(id, name string, manager lock.Manager) (*Container, error)
 			PID:        1234,
 			ExecSessions: map[string]*ExecSession{
 				"abcd": {
-					ID:      "1",
-					Command: []string{"2", "3"},
-					PID:     9876,
+					Id:  "1",
+					PID: 9876,
 				},
 				"ef01": {
-					ID:      "5",
-					Command: []string{"hello", "world"},
-					PID:     46765,
+					Id:  "5",
+					PID: 46765,
 				},
 			},
 			BindMounts: map[string]string{
@@ -73,8 +80,10 @@ func getTestContainer(id, name string, manager lock.Manager) (*Container, error)
 			},
 		},
 		runtime: &Runtime{
-			config: &RuntimeConfig{
-				VolumePath: "/does/not/exist/tmp/volumes",
+			config: &config.Config{
+				Engine: config.EngineConfig{
+					VolumePath: "/does/not/exist/tmp/volumes",
+				},
 			},
 		},
 		valid: true,
@@ -88,13 +97,13 @@ func getTestContainer(id, name string, manager lock.Manager) (*Container, error)
 
 	ctr.config.Labels["test"] = "testing"
 
-	// Allocate a lock for the container
-	lock, err := manager.AllocateLock()
+	// Allocate a containerLock for the container
+	containerLock, err := manager.AllocateLock()
 	if err != nil {
 		return nil, err
 	}
-	ctr.lock = lock
-	ctr.config.LockID = lock.ID()
+	ctr.lock = containerLock
+	ctr.config.LockID = containerLock.ID()
 
 	return ctr, nil
 }
@@ -113,13 +122,13 @@ func getTestPod(id, name string, manager lock.Manager) (*Pod, error) {
 		valid: true,
 	}
 
-	// Allocate a lock for the pod
-	lock, err := manager.AllocateLock()
+	// Allocate a podLock for the pod
+	podLock, err := manager.AllocateLock()
 	if err != nil {
 		return nil, err
 	}
-	pod.lock = lock
-	pod.config.LockID = lock.ID()
+	pod.lock = podLock
+	pod.config.LockID = podLock.ID()
 
 	return pod, nil
 }

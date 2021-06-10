@@ -11,10 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/containers/image/types"
+	"github.com/containers/image/v5/types"
+	"github.com/docker/docker/pkg/homedir"
+	"github.com/ghodss/yaml"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	yaml "gopkg.in/yaml.v2"
 )
 
 // PolicyContent struct for policy.json file
@@ -60,6 +61,12 @@ type ShowOutput struct {
 	Sigstore  string
 }
 
+// systemRegistriesDirPath is the path to registries.d.
+const systemRegistriesDirPath = "/etc/containers/registries.d"
+
+// userRegistriesDir is the path to the per user registries.d.
+var userRegistriesDir = filepath.FromSlash(".config/containers/registries.d")
+
 // DefaultPolicyPath returns a path to the default policy of the system.
 func DefaultPolicyPath(sys *types.SystemContext) string {
 	systemDefaultPolicyPath := "/etc/containers/policy.json"
@@ -76,15 +83,17 @@ func DefaultPolicyPath(sys *types.SystemContext) string {
 
 // RegistriesDirPath returns a path to registries.d
 func RegistriesDirPath(sys *types.SystemContext) string {
-	systemRegistriesDirPath := "/etc/containers/registries.d"
-	if sys != nil {
-		if sys.RegistriesDirPath != "" {
-			return sys.RegistriesDirPath
-		}
-		if sys.RootForImplicitAbsolutePaths != "" {
-			return filepath.Join(sys.RootForImplicitAbsolutePaths, systemRegistriesDirPath)
-		}
+	if sys != nil && sys.RegistriesDirPath != "" {
+		return sys.RegistriesDirPath
 	}
+	userRegistriesDirPath := filepath.Join(homedir.Get(), userRegistriesDir)
+	if _, err := os.Stat(userRegistriesDirPath); err == nil {
+		return userRegistriesDirPath
+	}
+	if sys != nil && sys.RootForImplicitAbsolutePaths != "" {
+		return filepath.Join(sys.RootForImplicitAbsolutePaths, systemRegistriesDirPath)
+	}
+
 	return systemRegistriesDirPath
 }
 
@@ -117,7 +126,7 @@ func LoadAndMergeConfig(dirPath string) (*RegistryConfiguration, error) {
 		var config RegistryConfiguration
 		err = yaml.Unmarshal(configBytes, &config)
 		if err != nil {
-			return nil, errors.Wrapf(err, "Error parsing %s", configPath)
+			return nil, errors.Wrapf(err, "error parsing %s", configPath)
 		}
 		if config.DefaultDocker != nil {
 			if mergedConfig.DefaultDocker != nil {
@@ -139,7 +148,7 @@ func LoadAndMergeConfig(dirPath string) (*RegistryConfiguration, error) {
 	return &mergedConfig, nil
 }
 
-// HaveMatchRegistry checks if trust settings for the registry have been configed in yaml file
+// HaveMatchRegistry checks if trust settings for the registry have been configured in yaml file
 func HaveMatchRegistry(key string, registryConfigs *RegistryConfiguration) *RegistryNamespace {
 	searchKey := key
 	if !strings.Contains(searchKey, "/") {
@@ -157,7 +166,7 @@ func HaveMatchRegistry(key string, registryConfigs *RegistryConfiguration) *Regi
 			searchKey = searchKey[:strings.LastIndex(searchKey, "/")]
 		}
 	}
-	return nil
+	return registryConfigs.DefaultDocker
 }
 
 // CreateTmpFile creates a temp file under dir and writes the content into it
@@ -170,7 +179,6 @@ func CreateTmpFile(dir, pattern string, content []byte) (string, error) {
 
 	if _, err := tmpfile.Write(content); err != nil {
 		return "", err
-
 	}
 	return tmpfile.Name(), nil
 }
@@ -226,10 +234,10 @@ func GetPolicy(policyPath string) (PolicyContent, error) {
 	var policyContentStruct PolicyContent
 	policyContent, err := ioutil.ReadFile(policyPath)
 	if err != nil {
-		return policyContentStruct, errors.Wrapf(err, "unable to read policy file %s", policyPath)
+		return policyContentStruct, errors.Wrap(err, "unable to read policy file")
 	}
 	if err := json.Unmarshal(policyContent, &policyContentStruct); err != nil {
-		return policyContentStruct, errors.Wrapf(err, "could not parse trust policies")
+		return policyContentStruct, errors.Wrapf(err, "could not parse trust policies from %s", policyPath)
 	}
 	return policyContentStruct, nil
 }

@@ -1,5 +1,3 @@
-// +build !remoteclient
-
 package integration
 
 import (
@@ -8,7 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	. "github.com/containers/libpod/test/utils"
+	"github.com/containers/podman/v3/pkg/rootless"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -27,7 +26,7 @@ var _ = Describe("Podman push", func() {
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.RestoreAllArtifacts()
+		podmanTest.AddImageToRWStore(ALPINE)
 	})
 
 	AfterEach(func() {
@@ -38,6 +37,7 @@ var _ = Describe("Podman push", func() {
 	})
 
 	It("podman push to containers/storage", func() {
+		SkipIfRemote("Remote push does not support containers-storage transport")
 		session := podmanTest.Podman([]string{"push", ALPINE, "containers-storage:busybox:test"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
@@ -45,42 +45,56 @@ var _ = Describe("Podman push", func() {
 		session = podmanTest.Podman([]string{"rmi", ALPINE})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
-
-		session = podmanTest.Podman([]string{"rmi", "busybox:test"})
-		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Equal(0))
 	})
 
 	It("podman push to dir", func() {
+		SkipIfRemote("Remote push does not support dir transport")
 		bbdir := filepath.Join(podmanTest.TempDir, "busybox")
 		session := podmanTest.Podman([]string{"push", "--remove-signatures", ALPINE,
+			fmt.Sprintf("dir:%s", bbdir)})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+
+		bbdir = filepath.Join(podmanTest.TempDir, "busybox")
+		session = podmanTest.Podman([]string{"push", "--format", "oci", ALPINE,
 			fmt.Sprintf("dir:%s", bbdir)})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 	})
 
 	It("podman push to local registry", func() {
+		SkipIfRemote("Remote does not support --digestfile or --remove-signatures")
 		if podmanTest.Host.Arch == "ppc64le" {
 			Skip("No registry image for ppc64le")
 		}
+		if rootless.IsRootless() {
+			podmanTest.RestoreArtifact(registry)
+		}
 		lock := GetPortLock("5000")
 		defer lock.Unlock()
-		podmanTest.RestoreArtifact(registry)
 		session := podmanTest.Podman([]string{"run", "-d", "--name", "registry", "-p", "5000:5000", registry, "/entrypoint.sh", "/etc/docker/registry/config.yml"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 
 		if !WaitContainerReady(podmanTest, "registry", "listening on", 20, 1) {
-			Skip("Can not start docker registry.")
+			Skip("Cannot start docker registry.")
 		}
 
-		push := podmanTest.Podman([]string{"push", "--tls-verify=false", "--remove-signatures", ALPINE, "localhost:5000/my-alpine"})
+		push := podmanTest.Podman([]string{"push", "-q", "--tls-verify=false", "--remove-signatures", ALPINE, "localhost:5000/my-alpine"})
 		push.WaitWithDefaultTimeout()
 		Expect(push.ExitCode()).To(Equal(0))
+
+		// Test --digestfile option
+		push2 := podmanTest.Podman([]string{"push", "--tls-verify=false", "--digestfile=/tmp/digestfile.txt", "--remove-signatures", ALPINE, "localhost:5000/my-alpine"})
+		push2.WaitWithDefaultTimeout()
+		fi, err := os.Lstat("/tmp/digestfile.txt")
+		Expect(err).To(BeNil())
+		Expect(fi.Name()).To(Equal("digestfile.txt"))
+		Expect(push2.ExitCode()).To(Equal(0))
 	})
 
 	It("podman push to local registry with authorization", func() {
-		SkipIfRootless()
+		SkipIfRootless("FIXME: Creating content in certs.d we use directories in homedir")
 		if podmanTest.Host.Arch == "ppc64le" {
 			Skip("No registry image for ppc64le")
 		}
@@ -106,7 +120,6 @@ var _ = Describe("Podman push", func() {
 		}
 		lock := GetPortLock("5000")
 		defer lock.Unlock()
-		podmanTest.RestoreArtifact(registry)
 		session := podmanTest.Podman([]string{"run", "--entrypoint", "htpasswd", registry, "-Bbn", "podmantest", "test"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
@@ -126,15 +139,15 @@ var _ = Describe("Podman push", func() {
 		Expect(session.ExitCode()).To(Equal(0))
 
 		if !WaitContainerReady(podmanTest, "registry", "listening on", 20, 1) {
-			Skip("Can not start docker registry.")
+			Skip("Cannot start docker registry.")
 		}
 
 		session = podmanTest.Podman([]string{"logs", "registry"})
 		session.WaitWithDefaultTimeout()
 
-		push := podmanTest.Podman([]string{"push", "--creds=podmantest:test", ALPINE, "localhost:5000/tlstest"})
+		push := podmanTest.Podman([]string{"push", "--format=v2s2", "--creds=podmantest:test", ALPINE, "localhost:5000/tlstest"})
 		push.WaitWithDefaultTimeout()
-		Expect(push.ExitCode()).To(Not(Equal(0)))
+		Expect(push).To(ExitWithError())
 
 		push = podmanTest.Podman([]string{"push", "--creds=podmantest:test", "--tls-verify=false", ALPINE, "localhost:5000/tlstest"})
 		push.WaitWithDefaultTimeout()
@@ -145,11 +158,14 @@ var _ = Describe("Podman push", func() {
 
 		push = podmanTest.Podman([]string{"push", "--creds=podmantest:wrongpasswd", ALPINE, "localhost:5000/credstest"})
 		push.WaitWithDefaultTimeout()
-		Expect(push.ExitCode()).To(Not(Equal(0)))
+		Expect(push).To(ExitWithError())
 
-		push = podmanTest.Podman([]string{"push", "--creds=podmantest:test", "--cert-dir=fakedir", ALPINE, "localhost:5000/certdirtest"})
-		push.WaitWithDefaultTimeout()
-		Expect(push.ExitCode()).To(Not(Equal(0)))
+		if !IsRemote() {
+			// remote does not support --cert-dir
+			push = podmanTest.Podman([]string{"push", "--creds=podmantest:test", "--cert-dir=fakedir", ALPINE, "localhost:5000/certdirtest"})
+			push.WaitWithDefaultTimeout()
+			Expect(push).To(ExitWithError())
+		}
 
 		push = podmanTest.Podman([]string{"push", "--creds=podmantest:test", ALPINE, "localhost:5000/defaultflags"})
 		push.WaitWithDefaultTimeout()
@@ -157,6 +173,7 @@ var _ = Describe("Podman push", func() {
 	})
 
 	It("podman push to docker-archive", func() {
+		SkipIfRemote("Remote push does not support docker-archive transport")
 		tarfn := filepath.Join(podmanTest.TempDir, "alp.tar")
 		session := podmanTest.Podman([]string{"push", ALPINE,
 			fmt.Sprintf("docker-archive:%s:latest", tarfn)})
@@ -165,6 +182,7 @@ var _ = Describe("Podman push", func() {
 	})
 
 	It("podman push to docker daemon", func() {
+		SkipIfRemote("Remote push does not support docker-daemon transport")
 		setup := SystemExec("bash", []string{"-c", "systemctl status docker 2>&1"})
 
 		if setup.LineInOutputContains("Active: inactive") {
@@ -190,6 +208,7 @@ var _ = Describe("Podman push", func() {
 	})
 
 	It("podman push to oci-archive", func() {
+		SkipIfRemote("Remote push does not support oci-archive transport")
 		tarfn := filepath.Join(podmanTest.TempDir, "alp.tar")
 		session := podmanTest.Podman([]string{"push", ALPINE,
 			fmt.Sprintf("oci-archive:%s:latest", tarfn)})
@@ -197,24 +216,8 @@ var _ = Describe("Podman push", func() {
 		Expect(session.ExitCode()).To(Equal(0))
 	})
 
-	It("podman push to local ostree", func() {
-		if !IsCommandAvailable("ostree") {
-			Skip("ostree is not installed")
-		}
-
-		ostreePath := filepath.Join(podmanTest.TempDir, "ostree/repo")
-		os.MkdirAll(ostreePath, os.ModePerm)
-
-		setup := SystemExec("ostree", []string{strings.Join([]string{"--repo=", ostreePath}, ""), "init"})
-		Expect(setup.ExitCode()).To(Equal(0))
-
-		session := podmanTest.Podman([]string{"push", ALPINE, strings.Join([]string{"ostree:alp@", ostreePath}, "")})
-		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Equal(0))
-
-	})
-
 	It("podman push to docker-archive no reference", func() {
+		SkipIfRemote("Remote push does not support docker-archive transport")
 		tarfn := filepath.Join(podmanTest.TempDir, "alp.tar")
 		session := podmanTest.Podman([]string{"push", ALPINE,
 			fmt.Sprintf("docker-archive:%s", tarfn)})
@@ -223,6 +226,7 @@ var _ = Describe("Podman push", func() {
 	})
 
 	It("podman push to oci-archive no reference", func() {
+		SkipIfRemote("Remote push does not support oci-archive transport")
 		ociarc := filepath.Join(podmanTest.TempDir, "alp-oci")
 		session := podmanTest.Podman([]string{"push", ALPINE,
 			fmt.Sprintf("oci-archive:%s", ociarc)})

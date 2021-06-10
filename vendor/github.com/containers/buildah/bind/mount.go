@@ -264,9 +264,13 @@ func UnmountMountpoints(mountpoint string, mountpointsToRemove []string) error {
 		mount := getMountByID(id)
 		// check if this mountpoint is mounted
 		if err := unix.Lstat(mount.Mountpoint, &st); err != nil {
+			if os.IsNotExist(err) {
+				logrus.Debugf("mountpoint %q is not present(?), skipping", mount.Mountpoint)
+				continue
+			}
 			return errors.Wrapf(err, "error checking if %q is mounted", mount.Mountpoint)
 		}
-		if mount.Major != int(unix.Major(st.Dev)) || mount.Minor != int(unix.Minor(st.Dev)) {
+		if uint64(mount.Major) != uint64(st.Dev) || uint64(mount.Minor) != uint64(st.Dev) { // nolint:unconvert (required for some OS/arch combinations)
 			logrus.Debugf("%q is apparently not really mounted, skipping", mount.Mountpoint)
 			continue
 		}

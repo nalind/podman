@@ -3,14 +3,15 @@ package libpod
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/containers/buildah"
-	"github.com/containers/buildah/util"
-	is "github.com/containers/image/storage"
-	"github.com/containers/libpod/libpod/events"
-	"github.com/containers/libpod/libpod/image"
+	"github.com/containers/common/libimage"
+	is "github.com/containers/image/v5/storage"
+	"github.com/containers/image/v5/types"
+	"github.com/containers/podman/v3/libpod/define"
+	"github.com/containers/podman/v3/libpod/events"
+	libpodutil "github.com/containers/podman/v3/pkg/util"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -18,7 +19,7 @@ import (
 // ContainerCommitOptions is a struct used to commit a container to an image
 // It uses buildah's CommitOptions as a base. Long-term we might wish to
 // add these to the buildah struct once buildah is more integrated with
-//libpod
+// libpod
 type ContainerCommitOptions struct {
 	buildah.CommitOptions
 	Pause          bool
@@ -28,16 +29,9 @@ type ContainerCommitOptions struct {
 	Changes        []string
 }
 
-// ChangeCmds is the list of valid Changes commands to passed to the Commit call
-var ChangeCmds = []string{"CMD", "ENTRYPOINT", "ENV", "EXPOSE", "LABEL", "ONBUILD", "STOPSIGNAL", "USER", "VOLUME", "WORKDIR"}
-
 // Commit commits the changes between a container and its image, creating a new
 // image
-func (c *Container) Commit(ctx context.Context, destImage string, options ContainerCommitOptions) (*image.Image, error) {
-	var (
-		isEnvCleared, isLabelCleared, isExposeCleared, isVolumeCleared bool
-	)
-
+func (c *Container) Commit(ctx context.Context, destImage string, options ContainerCommitOptions) (*libimage.Image, error) {
 	if c.config.Rootfs != "" {
 		return nil, errors.Errorf("cannot commit a container that uses an exploded rootfs")
 	}
@@ -51,18 +45,17 @@ func (c *Container) Commit(ctx context.Context, destImage string, options Contai
 		}
 	}
 
-	if c.state.State == ContainerStateRunning && options.Pause {
-		if err := c.runtime.ociRuntime.pauseContainer(c); err != nil {
-			return nil, errors.Wrapf(err, "error pausing container %q", c.ID())
+	if c.state.State == define.ContainerStateRunning && options.Pause {
+		if err := c.pause(); err != nil {
+			return nil, errors.Wrapf(err, "error pausing container %q to commit", c.ID())
 		}
 		defer func() {
-			if err := c.runtime.ociRuntime.unpauseContainer(c); err != nil {
+			if err := c.unpause(); err != nil {
 				logrus.Errorf("error unpausing container %q: %v", c.ID(), err)
 			}
 		}()
 	}
 
-	sc := image.GetSystemContext(options.SignaturePolicyPath, "", false)
 	builderOptions := buildah.ImportOptions{
 		Container:           c.ID(),
 		SignaturePolicyPath: options.SignaturePolicyPath,
@@ -70,14 +63,13 @@ func (c *Container) Commit(ctx context.Context, destImage string, options Contai
 	commitOptions := buildah.CommitOptions{
 		SignaturePolicyPath:   options.SignaturePolicyPath,
 		ReportWriter:          options.ReportWriter,
-		SystemContext:         sc,
+		SystemContext:         c.runtime.imageContext,
 		PreferredManifestType: options.PreferredManifestType,
 	}
 	importBuilder, err := buildah.ImportBuilder(ctx, c.runtime.store, builderOptions)
 	if err != nil {
 		return nil, err
 	}
-
 	if options.Author != "" {
 		importBuilder.SetMaintainer(options.Author)
 	}
@@ -99,13 +91,13 @@ func (c *Container) Commit(ctx context.Context, destImage string, options Contai
 	// Should we store the ENV we actually want in the spec separately?
 	if c.config.Spec.Process != nil {
 		for _, e := range c.config.Spec.Process.Env {
-			splitEnv := strings.Split(e, "=")
+			splitEnv := strings.SplitN(e, "=", 2)
 			importBuilder.SetEnv(splitEnv[0], splitEnv[1])
 		}
 	}
 	// Expose ports
 	for _, p := range c.config.PortMappings {
-		importBuilder.SetPort(fmt.Sprintf("%d", p.ContainerPort))
+		importBuilder.SetPort(fmt.Sprintf("%d/%s", p.ContainerPort, p.Protocol))
 	}
 	// Labels
 	for k, v := range c.Labels() {
@@ -113,7 +105,9 @@ func (c *Container) Commit(ctx context.Context, destImage string, options Contai
 	}
 	// No stop signal
 	// User
-	importBuilder.SetUser(c.User())
+	if c.config.User != "" {
+		importBuilder.SetUser(c.config.User)
+	}
 	// Volumes
 	if options.IncludeVolumes {
 		for _, v := range c.config.UserVolumes {
@@ -121,95 +115,98 @@ func (c *Container) Commit(ctx context.Context, destImage string, options Contai
 				importBuilder.AddVolume(v)
 			}
 		}
+	} else {
+		// Only include anonymous named volumes added by the user by
+		// default.
+		for _, v := range c.config.NamedVolumes {
+			include := false
+			for _, userVol := range c.config.UserVolumes {
+				if userVol == v.Dest {
+					include = true
+					break
+				}
+			}
+			if include {
+				vol, err := c.runtime.GetVolume(v.Name)
+				if err != nil {
+					return nil, errors.Wrapf(err, "volume %s used in container %s has been removed", v.Name, c.ID())
+				}
+				if vol.Anonymous() {
+					importBuilder.AddVolume(v.Dest)
+				}
+			}
+		}
 	}
 	// Workdir
-	importBuilder.SetWorkDir(c.Spec().Process.Cwd)
+	importBuilder.SetWorkDir(c.config.Spec.Process.Cwd)
 
 	// Process user changes
-	for _, change := range options.Changes {
-		splitChange := strings.SplitN(change, " ", 2)
-		if len(splitChange) != 2 {
-			splitChange = strings.SplitN(change, "=", 2)
-			if len(splitChange) < 2 {
-				return nil, errors.Errorf("invalid change %s format", change)
-			}
+	newImageConfig, err := libpodutil.GetImageConfig(options.Changes)
+	if err != nil {
+		return nil, err
+	}
+	if newImageConfig.User != "" {
+		importBuilder.SetUser(newImageConfig.User)
+	}
+	// EXPOSE only appends
+	for port := range newImageConfig.ExposedPorts {
+		importBuilder.SetPort(port)
+	}
+	// ENV only appends
+	for _, env := range newImageConfig.Env {
+		splitEnv := strings.SplitN(env, "=", 2)
+		key := splitEnv[0]
+		value := ""
+		if len(splitEnv) == 2 {
+			value = splitEnv[1]
+		}
+		importBuilder.SetEnv(key, value)
+	}
+	if newImageConfig.Entrypoint != nil {
+		importBuilder.SetEntrypoint(newImageConfig.Entrypoint)
+	}
+	if newImageConfig.Cmd != nil {
+		importBuilder.SetCmd(newImageConfig.Cmd)
+	}
+	// VOLUME only appends
+	for vol := range newImageConfig.Volumes {
+		importBuilder.AddVolume(vol)
+	}
+	if newImageConfig.WorkingDir != "" {
+		importBuilder.SetWorkDir(newImageConfig.WorkingDir)
+	}
+	for k, v := range newImageConfig.Labels {
+		importBuilder.SetLabel(k, v)
+	}
+	if newImageConfig.StopSignal != "" {
+		importBuilder.SetStopSignal(newImageConfig.StopSignal)
+	}
+	for _, onbuild := range newImageConfig.OnBuild {
+		importBuilder.SetOnBuild(onbuild)
+	}
+
+	var commitRef types.ImageReference
+	if destImage != "" {
+		// Now resolve the name.
+		resolvedImageName, err := c.runtime.LibimageRuntime().ResolveName(destImage)
+		if err != nil {
+			return nil, err
 		}
 
-		change := strings.Split(splitChange[1], " ")
-		switch strings.ToUpper(splitChange[0]) {
-		case "CMD":
-			importBuilder.SetCmd(change)
-		case "ENTRYPOINT":
-			importBuilder.SetEntrypoint(change)
-		case "ENV":
-			name := change[0]
-			val := ""
-			if len(change) < 2 {
-				change = strings.Split(change[0], "=")
-			}
-			if len(change) < 2 {
-				var ok bool
-				val, ok = os.LookupEnv(name)
-				if !ok {
-					return nil, errors.Errorf("invalid env variable %q: not defined in your environment", name)
-				}
-			} else {
-				val = strings.Join(change[1:], " ")
-			}
-			if !isEnvCleared { // Multiple values are valid, only clear once.
-				importBuilder.ClearEnv()
-				isEnvCleared = true
-			}
-			importBuilder.SetEnv(name, val)
-		case "EXPOSE":
-			if !isExposeCleared { // Multiple values are valid, only clear once
-				importBuilder.ClearPorts()
-				isExposeCleared = true
-			}
-			importBuilder.SetPort(splitChange[1])
-		case "LABEL":
-			if len(change) < 2 {
-				change = strings.Split(change[0], "=")
-			}
-			if len(change) < 2 {
-				return nil, errors.Errorf("invalid label %s format, requires to NAME=VAL", splitChange[1])
-			}
-			if !isLabelCleared { // multiple values are valid, only clear once
-				importBuilder.ClearLabels()
-				isLabelCleared = true
-			}
-			importBuilder.SetLabel(change[0], strings.Join(change[1:], " "))
-		case "ONBUILD":
-			importBuilder.SetOnBuild(splitChange[1])
-		case "STOPSIGNAL":
-			// No Set StopSignal
-		case "USER":
-			importBuilder.SetUser(splitChange[1])
-		case "VOLUME":
-			if !isVolumeCleared { // multiple values are valid, only clear once
-				importBuilder.ClearVolumes()
-				isVolumeCleared = true
-			}
-			importBuilder.AddVolume(splitChange[1])
-		case "WORKDIR":
-			importBuilder.SetWorkDir(splitChange[1])
+		imageRef, err := is.Transport.ParseStoreReference(c.runtime.store, resolvedImageName)
+		if err != nil {
+			return nil, errors.Wrapf(err, "error parsing target image name %q", destImage)
 		}
+		commitRef = imageRef
 	}
-	candidates, _, _, err := util.ResolveName(destImage, "", sc, c.runtime.store)
-	if err != nil {
-		return nil, errors.Wrapf(err, "error resolving name %q", destImage)
-	}
-	if len(candidates) == 0 {
-		return nil, errors.Errorf("error parsing target image name %q", destImage)
-	}
-	imageRef, err := is.Transport.ParseStoreReference(c.runtime.store, candidates[0])
-	if err != nil {
-		return nil, errors.Wrapf(err, "error parsing target image name %q", destImage)
-	}
-	id, _, _, err := importBuilder.Commit(ctx, imageRef, commitOptions)
+	id, _, _, err := importBuilder.Commit(ctx, commitRef, commitOptions)
 	if err != nil {
 		return nil, err
 	}
 	defer c.newContainerEvent(events.Commit)
-	return c.runtime.imageRuntime.NewFromLocal(id)
+	img, _, err := c.runtime.libimageRuntime.LookupImage(id, nil)
+	if err != nil {
+		return nil, err
+	}
+	return img, nil
 }

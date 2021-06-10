@@ -1,11 +1,10 @@
-// +build !remoteclient
-
 package integration
 
 import (
+	"io/ioutil"
 	"os"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -24,7 +23,7 @@ var _ = Describe("Podman rm", func() {
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.RestoreAllArtifacts()
+		podmanTest.SeedImages()
 	})
 
 	AfterEach(func() {
@@ -51,7 +50,7 @@ var _ = Describe("Podman rm", func() {
 
 		result := podmanTest.Podman([]string{"rm", cid})
 		result.WaitWithDefaultTimeout()
-		Expect(result.ExitCode()).To(Equal(125))
+		Expect(result.ExitCode()).To(Equal(2))
 	})
 
 	It("podman rm created container", func() {
@@ -128,10 +127,14 @@ var _ = Describe("Podman rm", func() {
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 
-		_, ec, cid := podmanTest.RunLsContainer("")
+		_, ec, cid := podmanTest.RunLsContainer("test1")
 		Expect(ec).To(Equal(0))
 
-		result := podmanTest.Podman([]string{"rm", "-l"})
+		latest := "-l"
+		if IsRemote() {
+			latest = cid
+		}
+		result := podmanTest.Podman([]string{"rm", latest})
 		result.WaitWithDefaultTimeout()
 		Expect(result.ExitCode()).To(Equal(0))
 		output := result.OutputToString()
@@ -140,11 +143,118 @@ var _ = Describe("Podman rm", func() {
 
 	})
 
+	It("podman rm --cidfile", func() {
+
+		tmpDir, err := ioutil.TempDir("", "")
+		Expect(err).To(BeNil())
+		tmpFile := tmpDir + "cid"
+
+		defer os.RemoveAll(tmpDir)
+
+		session := podmanTest.Podman([]string{"create", "--cidfile", tmpFile, ALPINE, "ls"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		cid := session.OutputToStringArray()[0]
+		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
+
+		result := podmanTest.Podman([]string{"rm", "--cidfile", tmpFile})
+		result.WaitWithDefaultTimeout()
+		Expect(result.ExitCode()).To(Equal(0))
+		output := result.OutputToString()
+		Expect(output).To(ContainSubstring(cid))
+		Expect(podmanTest.NumberOfContainers()).To(Equal(0))
+	})
+
+	It("podman rm multiple --cidfile", func() {
+
+		tmpDir, err := ioutil.TempDir("", "")
+		Expect(err).To(BeNil())
+		tmpFile1 := tmpDir + "cid-1"
+		tmpFile2 := tmpDir + "cid-2"
+
+		defer os.RemoveAll(tmpDir)
+
+		session := podmanTest.Podman([]string{"create", "--cidfile", tmpFile1, ALPINE, "ls"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		cid1 := session.OutputToStringArray()[0]
+		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
+
+		session = podmanTest.Podman([]string{"create", "--cidfile", tmpFile2, ALPINE, "ls"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		cid2 := session.OutputToStringArray()[0]
+		Expect(podmanTest.NumberOfContainers()).To(Equal(2))
+
+		result := podmanTest.Podman([]string{"rm", "--cidfile", tmpFile1, "--cidfile", tmpFile2})
+		result.WaitWithDefaultTimeout()
+		Expect(result.ExitCode()).To(Equal(0))
+		output := result.OutputToString()
+		Expect(output).To(ContainSubstring(cid1))
+		Expect(output).To(ContainSubstring(cid2))
+		Expect(podmanTest.NumberOfContainers()).To(Equal(0))
+	})
+
+	It("podman rm invalid --latest and --cidfile and --all", func() {
+		SkipIfRemote("Verifying --latest flag")
+
+		result := podmanTest.Podman([]string{"rm", "--cidfile", "foobar", "--latest"})
+		result.WaitWithDefaultTimeout()
+		Expect(result.ExitCode()).To(Equal(125))
+
+		result = podmanTest.Podman([]string{"rm", "--cidfile", "foobar", "--all"})
+		result.WaitWithDefaultTimeout()
+		Expect(result.ExitCode()).To(Equal(125))
+
+		result = podmanTest.Podman([]string{"rm", "--cidfile", "foobar", "--all", "--latest"})
+		result.WaitWithDefaultTimeout()
+		Expect(result.ExitCode()).To(Equal(125))
+
+		result = podmanTest.Podman([]string{"rm", "--latest", "--all"})
+		result.WaitWithDefaultTimeout()
+		Expect(result.ExitCode()).To(Equal(125))
+	})
+
+	It("podman rm --all", func() {
+		session := podmanTest.Podman([]string{"create", ALPINE, "ls"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
+
+		session = podmanTest.Podman([]string{"create", ALPINE, "ls"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(podmanTest.NumberOfContainers()).To(Equal(2))
+
+		session = podmanTest.Podman([]string{"rm", "--all"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(podmanTest.NumberOfContainers()).To(Equal(0))
+	})
+
+	It("podman rm --ignore", func() {
+		session := podmanTest.Podman([]string{"create", ALPINE, "ls"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		cid := session.OutputToStringArray()[0]
+		Expect(podmanTest.NumberOfContainers()).To(Equal(1))
+
+		session = podmanTest.Podman([]string{"rm", "bogus", cid})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(1))
+
+		session = podmanTest.Podman([]string{"rm", "--ignore", "bogus", cid})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(podmanTest.NumberOfContainers()).To(Equal(0))
+	})
+
 	It("podman rm bogus container", func() {
 		session := podmanTest.Podman([]string{"rm", "bogus"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(1))
 	})
+
 	It("podman rm bogus container and a running container", func() {
 		session := podmanTest.RunTopContainer("test1")
 		session.WaitWithDefaultTimeout()
@@ -152,10 +262,24 @@ var _ = Describe("Podman rm", func() {
 
 		session = podmanTest.Podman([]string{"rm", "bogus", "test1"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Equal(125))
+		Expect(session.ExitCode()).To(Equal(1))
 
 		session = podmanTest.Podman([]string{"rm", "test1", "bogus"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Equal(125))
+		Expect(session.ExitCode()).To(Equal(1))
+	})
+
+	It("podman rm --ignore bogus container and a running container", func() {
+		session := podmanTest.RunTopContainer("test1")
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+
+		session = podmanTest.Podman([]string{"rm", "--force", "--ignore", "bogus", "test1"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+
+		session = podmanTest.Podman([]string{"rm", "--ignore", "test1", "bogus"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
 	})
 })

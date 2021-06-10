@@ -18,7 +18,7 @@
 %global provider_tld    com
 %global project         containers
 %global repo            libpod
-# https://github.com/containers/libpod
+# https://github.com/containers/podman
 %global provider_prefix %{provider}.%{provider_tld}/%{project}/%{repo}
 %global import_path     %{provider_prefix}
 %global commit          #COMMIT#
@@ -36,19 +36,12 @@ BuildArch: noarch
 BuildRequires: git
 BuildRequires: python3-devel
 BuildRequires: python3-setuptools
-BuildRequires: python3-varlink
 
 Requires: python3-humanize
 Requires: python3-pytoml
 Requires: python3-setuptools
-Requires: python3-varlink
 Requires: python3-psutil
 Requires: podman
-
-%if 0%{?fedora}
-# 2018-07-20 RHEL8 doesn't have varlink RPM yet
-Requires: python3-varlink
-%endif
 
 Provides: %{name} = %{version}-%{release}
 
@@ -92,7 +85,7 @@ popd
 
 %files
 %license LICENSE
-%doc README.md CONTRIBUTING.md install.md code-of-conduct.md transfer.md
+%doc README.md CONTRIBUTING.md install.md CODE-OF-CONDUCT.md transfer.md
 %{_bindir}/pypodman
 %{_mandir}/man1/pypodman.1*
 %dir %{python3_sitelib}/podman

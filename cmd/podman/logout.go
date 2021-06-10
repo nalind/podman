@@ -1,78 +1,56 @@
 package main
 
 import (
-	"fmt"
+	"os"
 
-	"github.com/containers/image/pkg/docker/config"
-	"github.com/containers/libpod/cmd/podman/cliconfig"
-	"github.com/containers/libpod/libpod/image"
-	"github.com/pkg/errors"
+	"github.com/containers/common/pkg/auth"
+	"github.com/containers/common/pkg/completion"
+	"github.com/containers/image/v5/types"
+	"github.com/containers/podman/v3/cmd/podman/common"
+	"github.com/containers/podman/v3/cmd/podman/registry"
+	"github.com/containers/podman/v3/pkg/registries"
 	"github.com/spf13/cobra"
 )
 
 var (
-	logoutCommand     cliconfig.LogoutValues
-	logoutDescription = "Remove the cached username and password for the registry."
-	_logoutCommand    = &cobra.Command{
-		Use:   "logout [flags] REGISTRY",
-		Short: "Logout of a container registry",
-		Long:  logoutDescription,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			logoutCommand.InputArgs = args
-			logoutCommand.GlobalFlags = MainGlobalOpts
-			logoutCommand.Remote = remoteclient
-			return logoutCmd(&logoutCommand)
-		},
-		Example: `podman logout docker.io
-  podman logout --authfile authdir/myauths.json docker.io
+	logoutOptions = auth.LogoutOptions{}
+	logoutCommand = &cobra.Command{
+		Use:               "logout [options] [REGISTRY]",
+		Short:             "Logout of a container registry",
+		Long:              "Remove the cached username and password for the registry.",
+		RunE:              logout,
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: common.AutocompleteRegistries,
+		Example: `podman logout quay.io
+  podman logout --authfile dir/auth.json quay.io
   podman logout --all`,
 	}
 )
 
 func init() {
-	logoutCommand.Command = _logoutCommand
-	logoutCommand.SetHelpTemplate(HelpTemplate())
-	logoutCommand.SetUsageTemplate(UsageTemplate())
+	// Note that the local and the remote client behave the same: both
+	// store credentials locally while the remote client will pass them
+	// over the wire to the endpoint.
+	registry.Commands = append(registry.Commands, registry.CliCommand{
+		Command: logoutCommand,
+	})
 	flags := logoutCommand.Flags()
-	flags.BoolVarP(&logoutCommand.All, "all", "a", false, "Remove the cached credentials for all registries in the auth file")
-	flags.StringVar(&logoutCommand.Authfile, "authfile", "", "Path of the authentication file. Default is ${XDG_RUNTIME_DIR}/containers/auth.json. Use REGISTRY_AUTH_FILE environment variable to override")
 
+	// Flags from the auth package.
+	flags.AddFlagSet(auth.GetLogoutFlags(&logoutOptions))
+
+	// Add flag completion
+	completion.CompleteCommandFlags(logoutCommand, auth.GetLogoutFlagsCompletions())
+
+	logoutOptions.Stdout = os.Stdout
+	logoutOptions.AcceptUnspecifiedRegistry = true
 }
 
-// logoutCmd uses the authentication package to remove the authenticated of a registry
-// stored in the auth.json file
-func logoutCmd(c *cliconfig.LogoutValues) error {
-	args := c.InputArgs
-	if len(args) > 1 {
-		return errors.Errorf("too many arguments, logout takes at most 1 argument")
+// Implementation of podman-logout.
+func logout(cmd *cobra.Command, args []string) error {
+	sysCtx := types.SystemContext{
+		AuthFilePath:             logoutOptions.AuthFile,
+		SystemRegistriesConfPath: registries.SystemRegistriesConfPath(),
 	}
-	if len(args) == 0 && !c.All {
-		return errors.Errorf("registry must be given")
-	}
-	var server string
-	if len(args) == 1 {
-		server = scrubServer(args[0])
-	}
-	authfile := getAuthFile(c.Authfile)
-
-	sc := image.GetSystemContext("", authfile, false)
-
-	if c.All {
-		if err := config.RemoveAllAuthentication(sc); err != nil {
-			return err
-		}
-		fmt.Println("Removed login credentials for all registries")
-		return nil
-	}
-
-	err := config.RemoveAuthentication(sc, server)
-	switch err {
-	case nil:
-		fmt.Printf("Removed login credentials for %s\n", server)
-		return nil
-	case config.ErrNotLoggedIn:
-		return errors.Errorf("Not logged into %s\n", server)
-	default:
-		return errors.Wrapf(err, "error logging out of %q", server)
-	}
+	return auth.Logout(&sysCtx, &logoutOptions, args)
 }

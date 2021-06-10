@@ -1,5 +1,3 @@
-// +build !remoteclient
-
 package integration
 
 import (
@@ -11,13 +9,15 @@ import (
 	"syscall"
 	"time"
 
-	. "github.com/containers/libpod/test/utils"
+	"github.com/containers/podman/v3/pkg/rootless"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"golang.org/x/sys/unix"
 )
 
 const sigCatch = "trap \"echo FOO >> /h/fifo \" 8; echo READY >> /h/fifo; while :; do sleep 0.25; done"
+const sigCatch2 = "trap \"echo Received\" SIGFPE; while :; do sleep 0.25; done"
 
 var _ = Describe("Podman run with --sig-proxy", func() {
 	var (
@@ -33,7 +33,7 @@ var _ = Describe("Podman run with --sig-proxy", func() {
 		}
 		podmanTest = PodmanTestCreate(tmpdir)
 		podmanTest.Setup()
-		podmanTest.RestoreArtifact(fedoraMinimal)
+		podmanTest.SeedImages()
 	})
 
 	AfterEach(func() {
@@ -44,8 +44,9 @@ var _ = Describe("Podman run with --sig-proxy", func() {
 	})
 
 	Specify("signals are forwarded to container using sig-proxy", func() {
+		SkipIfRemote("FIXME: This looks like it is supposed to work in remote")
 		if podmanTest.Host.Arch == "ppc64le" {
-			Skip("Doesnt work on ppc64le")
+			Skip("Doesn't work on ppc64le")
 		}
 		signal := syscall.SIGFPE
 		// Set up a socket for communication
@@ -53,7 +54,9 @@ var _ = Describe("Podman run with --sig-proxy", func() {
 		os.Mkdir(udsDir, 0700)
 		udsPath := filepath.Join(udsDir, "fifo")
 		syscall.Mkfifo(udsPath, 0600)
-
+		if rootless.IsRootless() {
+			podmanTest.RestoreArtifact(fedoraMinimal)
+		}
 		_, pid := podmanTest.PodmanPID([]string{"run", "-it", "-v", fmt.Sprintf("%s:/h:Z", udsDir), fedoraMinimal, "bash", "-c", sigCatch})
 
 		uds, _ := os.OpenFile(udsPath, os.O_RDONLY|syscall.O_NONBLOCK, 0600)
@@ -107,8 +110,12 @@ var _ = Describe("Podman run with --sig-proxy", func() {
 	})
 
 	Specify("signals are not forwarded to container with sig-proxy false", func() {
-		signal := syscall.SIGPOLL
-		session, pid := podmanTest.PodmanPID([]string{"run", "--name", "test2", "--sig-proxy=false", fedoraMinimal, "bash", "-c", sigCatch})
+		SkipIfRemote("FIXME: This looks like it is supposed to work in remote")
+		signal := syscall.SIGFPE
+		if rootless.IsRootless() {
+			podmanTest.RestoreArtifact(fedoraMinimal)
+		}
+		session, pid := podmanTest.PodmanPID([]string{"run", "--name", "test2", "--sig-proxy=false", fedoraMinimal, "bash", "-c", sigCatch2})
 
 		ok := WaitForContainer(podmanTest)
 		Expect(ok).To(BeTrue())
@@ -125,8 +132,8 @@ var _ = Describe("Podman run with --sig-proxy", func() {
 		Expect(killSession.ExitCode()).To(Equal(0))
 
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Equal(137))
-		ok, _ = session.GrepString(fmt.Sprintf("Received %d", signal))
+		Expect(session.ExitCode()).ToNot(Equal(0))
+		ok, _ = session.GrepString("Received")
 		Expect(ok).To(BeFalse())
 	})
 

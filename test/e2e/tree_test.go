@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -22,7 +22,8 @@ var _ = Describe("Podman image tree", func() {
 			os.Exit(1)
 		}
 		podmanTest = PodmanTestCreate(tempdir)
-		podmanTest.RestoreAllArtifacts()
+		podmanTest.Setup()
+		podmanTest.AddImageToRWStore(BB)
 	})
 
 	AfterEach(func() {
@@ -33,31 +34,26 @@ var _ = Describe("Podman image tree", func() {
 	})
 
 	It("podman image tree", func() {
-		if podmanTest.RemoteTest {
-			Skip("Does not work on remote client")
-		}
-		session := podmanTest.Podman([]string{"pull", "docker.io/library/busybox:latest"})
-		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Equal(0))
-
-		dockerfile := `FROM docker.io/library/busybox:latest
+		SkipIfRemote("podman-image-tree is not supported for remote clients")
+		podmanTest.AddImageToRWStore(cirros)
+		dockerfile := `FROM quay.io/libpod/cirros:latest
 RUN mkdir hello
 RUN touch test.txt
 ENV foo=bar
 `
 		podmanTest.BuildImage(dockerfile, "test:latest", "true")
 
-		session = podmanTest.Podman([]string{"image", "tree", "test:latest"})
+		session := podmanTest.Podman([]string{"image", "tree", "test:latest"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
-		session = podmanTest.Podman([]string{"image", "tree", "--whatrequires", "docker.io/library/busybox:latest"})
+		session = podmanTest.Podman([]string{"image", "tree", "--whatrequires", "quay.io/libpod/cirros:latest"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 
 		session = podmanTest.Podman([]string{"rmi", "test:latest"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
-		session = podmanTest.Podman([]string{"rmi", "docker.io/library/busybox:latest"})
+		session = podmanTest.Podman([]string{"rmi", "quay.io/libpod/cirros:latest"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
 	})

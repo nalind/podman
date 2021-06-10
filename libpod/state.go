@@ -1,16 +1,5 @@
 package libpod
 
-// DBConfig is a set of Libpod runtime configuration settings that are saved
-// in a State when it is first created, and can subsequently be retrieved.
-type DBConfig struct {
-	LibpodRoot  string
-	LibpodTmp   string
-	StorageRoot string
-	StorageTmp  string
-	GraphDriver string
-	VolumePath  string
-}
-
 // State is a storage backend for libpod's current state.
 // A State is only initialized once per instance of libpod.
 // As such, initialization methods for State implementations may safely assume
@@ -54,10 +43,19 @@ type State interface {
 	// containers and pods in all namespaces will be returned.
 	SetNamespace(ns string) error
 
+	// Resolve an ID into a Name. Since Podman names and IDs are globally
+	// unique between Pods and Containers, the ID may belong to either a pod
+	// or container. Despite this, we will always return ErrNoSuchCtr if the
+	// ID does not exist.
+	GetName(id string) (string, error)
+
 	// Return a container from the database from its full ID.
 	// If the container is not in the set namespace, an error will be
 	// returned.
 	Container(id string) (*Container, error)
+	// Return a container ID from the database by full or partial ID or full
+	// name.
+	LookupContainerID(idOrName string) (string, error)
 	// Return a container from the database by full or partial ID or full
 	// name.
 	// Containers not in the set namespace will be ignored.
@@ -78,6 +76,8 @@ type State interface {
 	// Removes container from state.
 	// Containers that are part of pods must use RemoveContainerFromPod.
 	// The container must be part of the set namespace.
+	// All dependencies must be removed first.
+	// All exec sessions referencing the container must be removed first.
 	RemoveContainer(ctr *Container) error
 	// UpdateContainer updates a container's state from the backing store.
 	// The container must be part of the set namespace.
@@ -98,6 +98,46 @@ type State interface {
 	// returned.
 	AllContainers() ([]*Container, error)
 
+	// Get networks the container is currently connected to.
+	GetNetworks(ctr *Container) ([]string, error)
+	// Get network aliases for the given container in the given network.
+	GetNetworkAliases(ctr *Container, network string) ([]string, error)
+	// Get all network aliases for the given container.
+	GetAllNetworkAliases(ctr *Container) (map[string][]string, error)
+	// Add the container to the given network, adding the given aliases
+	// (if present).
+	NetworkConnect(ctr *Container, network string, aliases []string) error
+	// Remove the container from the given network, removing all aliases for
+	// the container in that network in the process.
+	NetworkDisconnect(ctr *Container, network string) error
+
+	// Return a container config from the database by full ID
+	GetContainerConfig(id string) (*ContainerConfig, error)
+
+	// Add creates a reference to an exec session in the database.
+	// The container the exec session is attached to will be recorded.
+	// The container state will not be modified.
+	// The actual exec session itself is part of the container's state.
+	// We assume higher-level callers will add the session by saving the
+	// container's state before calling this. This only ensures that the ID
+	// of the exec session is associated with the ID of the container.
+	// Implementations may, but are not required to, verify that the state
+	// of the given container has an exec session with the ID given.
+	AddExecSession(ctr *Container, session *ExecSession) error
+	// Get retrieves the container a given exec session is attached to.
+	GetExecSession(id string) (string, error)
+	// Remove a reference to an exec session from the database.
+	// This will not modify container state to remove the exec session there
+	// and instead only removes the session ID -> container ID reference
+	// added by AddExecSession.
+	RemoveExecSession(session *ExecSession) error
+	// Get the IDs of all exec sessions attached to a given container.
+	GetContainerExecSessions(ctr *Container) ([]string, error)
+	// Remove all exec sessions for a single container.
+	// Usually used as part of removing the container.
+	// As with RemoveExecSession, container state will not be modified.
+	RemoveContainerExecSessions(ctr *Container) error
+
 	// PLEASE READ FULL DESCRIPTION BEFORE USING.
 	// Rewrite a container's configuration.
 	// This function breaks libpod's normal prohibition on a read-only
@@ -115,12 +155,33 @@ type State interface {
 	// answer is this: use this only very sparingly, and only if you really
 	// know what you're doing.
 	RewriteContainerConfig(ctr *Container, newCfg *ContainerConfig) error
-	// PLEASE READ THE ABOVE DESCRIPTION BEFORE USING.
+	// This is a more limited version of RewriteContainerConfig, though it
+	// comes with the added ability to alter a container's name. In exchange
+	// it loses the ability to manipulate the container's locks.
+	// It is not intended to be as restrictive as RewriteContainerConfig, in
+	// that we allow it to be run while other Podman processes are running,
+	// and without holding the alive lock.
+	// Container ID and pod membership still *ABSOLUTELY CANNOT* be altered.
+	// Also, you cannot change a container's dependencies - shared namespace
+	// containers or generic dependencies - at present. This is
+	// theoretically possible but not yet implemented.
+	// If newName is not "" the container will be renamed to the new name.
+	// The oldName parameter is only required if newName is given.
+	SafeRewriteContainerConfig(ctr *Container, oldName, newName string, newCfg *ContainerConfig) error
+	// PLEASE READ THE DESCRIPTION FOR RewriteContainerConfig BEFORE USING.
 	// This function is identical to RewriteContainerConfig, save for the
 	// fact that it is used with pods instead.
 	// It is subject to the same conditions as RewriteContainerConfig.
 	// Please do not use this unless you know what you're doing.
 	RewritePodConfig(pod *Pod, newCfg *PodConfig) error
+	// PLEASE READ THE DESCRIPTION FOR RewriteContainerConfig BEFORE USING.
+	// This function is identical to RewriteContainerConfig, save for the
+	// fact that it is used with volumes instead.
+	// It is subject to the same conditions as RewriteContainerConfig.
+	// The exception is that volumes do not have IDs, so only volume name
+	// cannot be altered.
+	// Please do not use this unless you know what you're doing.
+	RewriteVolumeConfig(volume *Volume, newCfg *VolumeConfig) error
 
 	// Accepts full ID of pod.
 	// If the pod given is not in the set namespace, an error will be
@@ -182,6 +243,9 @@ type State interface {
 	// Volume accepts full name of volume
 	// If the volume doesn't exist, an error will be returned
 	Volume(volName string) (*Volume, error)
+	// LookupVolume accepts an unambiguous partial name or full name of a
+	// volume. Ambiguous names will result in an error.
+	LookupVolume(name string) (*Volume, error)
 	// HasVolume returns true if volName exists in the state,
 	// otherwise it returns false
 	HasVolume(volName string) (bool, error)
@@ -195,6 +259,10 @@ type State interface {
 	// RemoveVolume removes the specified volume.
 	// Only volumes that have no container dependencies can be removed
 	RemoveVolume(volume *Volume) error
+	// UpdateVolume updates the volume's state from the database.
+	UpdateVolume(volume *Volume) error
+	// SaveVolume saves a volume's state to the database.
+	SaveVolume(volume *Volume) error
 	// AllVolumes returns all the volumes available in the state
 	AllVolumes() ([]*Volume, error)
 }

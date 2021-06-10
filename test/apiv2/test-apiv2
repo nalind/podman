@@ -1,0 +1,544 @@
+#!/usr/bin/env bash
+#
+# Usage: test-apiv2 [PORT]
+#
+# DEVELOPER NOTE: you almost certainly don't need to play in here. See README.
+#
+ME=$(basename $0)
+
+###############################################################################
+# BEGIN stuff you can but probably shouldn't customize
+
+PODMAN_TEST_IMAGE_REGISTRY=${PODMAN_TEST_IMAGE_REGISTRY:-"quay.io"}
+PODMAN_TEST_IMAGE_USER=${PODMAN_TEST_IMAGE_USER:-"libpod"}
+PODMAN_TEST_IMAGE_NAME=${PODMAN_TEST_IMAGE_NAME:-"alpine_labels"}
+PODMAN_TEST_IMAGE_TAG=${PODMAN_TEST_IMAGE_TAG:-"latest"}
+PODMAN_TEST_IMAGE_FQN="$PODMAN_TEST_IMAGE_REGISTRY/$PODMAN_TEST_IMAGE_USER/$PODMAN_TEST_IMAGE_NAME:$PODMAN_TEST_IMAGE_TAG"
+
+IMAGE=$PODMAN_TEST_IMAGE_FQN
+
+REGISTRY_IMAGE="${PODMAN_TEST_IMAGE_REGISTRY}/${PODMAN_TEST_IMAGE_USER}/registry:2.7"
+
+# END   stuff you can but probably shouldn't customize
+###############################################################################
+# BEGIN setup
+
+TMPDIR=${TMPDIR:-/tmp}
+WORKDIR=$(mktemp --tmpdir -d $ME.tmp.XXXXXX)
+
+# Log of all HTTP requests and responses; always make '.log' point to latest
+LOGBASE=${TMPDIR}/$ME.log
+LOG=${LOGBASE}.$(date +'%Y%m%dT%H%M%S')
+ln -sf $LOG $LOGBASE
+
+HOST=localhost
+PORT=${PODMAN_SERVICE_PORT:-8081}
+
+# Keep track of test count and failures in files, not variables, because
+# variables don't carry back up from subshells.
+testcounter_file=$WORKDIR/.testcounter
+failures_file=$WORKDIR/.failures
+
+echo 0 >$testcounter_file
+echo 0 >$failures_file
+
+# Where the tests live
+TESTS_DIR=$(realpath $(dirname $0))
+
+# Path to podman binary
+PODMAN_BIN=${PODMAN:-${TESTS_DIR}/../../bin/podman}
+
+# END   setup
+###############################################################################
+# BEGIN infrastructure code - the helper functions used in tests themselves
+
+#########
+#  die  #  Exit error with a message to stderr
+#########
+function die() {
+    echo "$ME: $*" >&2
+    exit 1
+}
+
+########
+#  is  #  Simple comparison
+########
+function is() {
+    local actual=$1
+    local expect=$2
+    local testname=$3
+
+    if [ "$actual" = "$expect" ]; then
+        # On success, include expected value; this helps readers understand
+        _show_ok 1 "$testname=$expect"
+        return
+    fi
+    _show_ok 0 "$testname" "$expect" "$actual"
+}
+
+##########
+#  like  #  Compare, but allowing patterns
+##########
+function like() {
+    local actual=$1
+    local expect=$2
+    local testname=$3
+
+    if expr "$actual" : "$expect" &>/dev/null; then
+        # On success, include expected value; this helps readers understand
+        # (but don't show enormous multi-line output like 'generate kube')
+        blurb=$(head -n1 <<<"$actual")
+        _show_ok 1 "$testname ('$blurb') ~ $expect"
+        return
+    fi
+    _show_ok 0 "$testname" "~ $expect" "$actual"
+}
+
+##############
+#  _show_ok  #  Helper for is() and like(): displays 'ok' or 'not ok'
+##############
+function _show_ok() {
+    local ok=$1
+    local testname=$2
+
+    # If output is a tty, colorize pass/fail
+    local red=
+    local green=
+    local reset=
+    local bold=
+    if [ -t 1 ]; then
+        red='\e[31m'
+        green='\e[32m'
+        reset='\e[0m'
+        bold='\e[1m'
+    fi
+
+    _bump $testcounter_file
+    count=$(<$testcounter_file)
+
+    # "skip" is a special case of "ok". Assume that our caller has included
+    # the magical '# skip - reason" comment string.
+    if [[ $ok == "skip" ]]; then
+        # colon-plus: replace green with yellow, but only if green is non-null
+        green="${green:+\e[33m}"
+        ok=1
+    fi
+    if [ $ok -eq 1 ]; then
+        echo -e "${green}ok $count ${TEST_CONTEXT} $testname${reset}"
+        echo    "ok $count ${TEST_CONTEXT} $testname" >>$LOG
+        return
+    fi
+
+    # Failed
+    local expect=$3
+    local actual=$4
+    echo -e "${red}not ok $count ${TEST_CONTEXT} $testname${reset}"
+    echo -e "${red}#  expected: $expect${reset}"
+    echo -e "${red}#    actual: ${bold}$actual${reset}"
+
+    echo    "not ok $count ${TEST_CONTEXT} $testname" >>$LOG
+    echo    "  expected: $expect"                     >>$LOG
+
+    _bump $failures_file
+}
+
+###########
+#  _bump  #  Increment a counter in a file
+###########
+function _bump() {
+    local file=$1
+
+    count=$(<$file)
+    echo $(( $count + 1 )) >| $file
+}
+
+#############
+#  jsonify  #  convert 'foo=bar,x=y' to json {"foo":"bar","x":"y"}
+#############
+function jsonify() {
+    # convert each to double-quoted form
+    local -a settings_out
+    for i in "$@"; do
+        # Each argument is of the form foo=bar. Separate into left and right.
+        local lhs
+        local rhs
+        IFS='=' read lhs rhs <<<"$i"
+
+        # If right-hand side already includes double quotes, do nothing
+        if [[ ! $rhs =~ \" ]]; then
+            rhs="\"${rhs}\""
+        fi
+        settings_out+=("\"${lhs}\":${rhs}")
+    done
+
+    # ...and wrap inside braces, with comma separator if multiple fields
+    (IFS=','; echo "{${settings_out[*]}}")
+}
+
+#######
+#  t  #  Main test helper
+#######
+function t() {
+    local method=$1; shift
+    local path=$1; shift
+    local curl_args
+
+    local testname="$method $path"
+    # POST requests may be followed by one or more key=value pairs.
+    # Slurp the command line until we see a 3-digit status code.
+    if [[ $method = "POST" ]]; then
+        local -a post_args
+        for arg; do
+            case "$arg" in
+                *=*)              post_args+=("$arg"); shift ;;
+                [1-9][0-9][0-9])  break;;
+                *)                die "Internal error: invalid POST arg '$arg'" ;;
+            esac
+        done
+        curl_args="-d $(jsonify ${post_args[@]})"
+        testname="$testname [$curl_args]"
+    fi
+
+    # entrypoint path can include a descriptive comment; strip it off
+    path=${path%% *}
+
+    # path may include JSONish params that curl will barf on; url-encode them
+    path="${path//'['/%5B}"
+    path="${path//']'/%5D}"
+    path="${path//'{'/%7B}"
+    path="${path//'}'/%7D}"
+    path="${path//':'/%3A}"
+
+    # curl -X HEAD but without --head seems to wait for output anyway
+    if [[ $method == "HEAD" ]]; then
+        curl_args="--head"
+    fi
+    local expected_code=$1; shift
+
+    # If given path begins with /, use it as-is; otherwise prepend /version/
+    local url=http://$HOST:$PORT
+    if expr "$path" : "/" >/dev/null; then
+        url="$url$path"
+    else
+        url="$url/v1.40/$path"
+    fi
+
+    # Log every action we do
+    echo "-------------------------------------------------------------" >>$LOG
+    echo "\$ $testname"                                                  >>$LOG
+    rm -f $WORKDIR/curl.*
+    # -s = silent, but --write-out 'format' gives us important response data
+    response=$(curl -s -X $method ${curl_args}                   \
+                    -H 'Content-type: application/json'          \
+                    --dump-header $WORKDIR/curl.headers.out       \
+                    --write-out '%{http_code}^%{content_type}^%{time_total}' \
+                    -o $WORKDIR/curl.result.out "$url")
+
+    # Any error from curl is instant bad news, from which we can't recover
+    rc=$?
+    if [[ $rc -ne 0 ]]; then
+        echo "FATAL: curl failure ($rc) on $url - cannot continue" >&2
+        exit 1
+    fi
+
+    # Show returned headers (without trailing ^M or empty lines) in log file.
+    # Sometimes -- I can't remember why! -- we don't get headers.
+    if [[ -e $WORKDIR/curl.headers.out ]]; then
+        tr -d '\015' < $WORKDIR/curl.headers.out | egrep '.' >>$LOG
+    fi
+
+    IFS='^' read actual_code content_type time_total <<<"$response"
+    printf "X-Response-Time: ${time_total}s\n\n" >>$LOG
+
+    # Log results, if text. If JSON, filter through jq for readability.
+    if [[ $content_type =~ /octet ]]; then
+        output="[$(file --brief $WORKDIR/curl.result.out)]"
+        echo "$output" >>$LOG
+    elif [[ -e $WORKDIR/curl.result.out ]]; then
+        output=$(< $WORKDIR/curl.result.out)
+
+        if [[ $content_type =~ application/json ]] && [[ $method != "HEAD" ]]; then
+            jq . <<<"$output" >>$LOG
+        else
+            echo "$output" >>$LOG
+        fi
+    else
+        output=
+        echo "[no output]" >>$LOG
+    fi
+
+    # Test return code
+    is "$actual_code" "$expected_code" "$testname : status"
+
+    # Special case: 204/304, by definition, MUST NOT return content (rfc2616)
+    if [[ $expected_code = 204 || $expected_code = 304 ]]; then
+        if [ -n "$*" ]; then
+            die "Internal error: ${expected_code} status returns no output; fix your test."
+        fi
+        if [ -n "$output" ]; then
+            _show_ok 0 "$testname: ${expected_code} status returns no output" "''" "$output"
+        fi
+        return
+    fi
+
+    local i
+
+    # Special case: if response code does not match, dump the response body
+    # and skip all further subtests.
+    if [[ $actual_code != $expected_code ]]; then
+        echo -e "#  response: $output"
+        for i; do
+            _show_ok skip "$testname: $i # skip - wrong return code"
+        done
+        return
+    fi
+
+    for i; do
+        if expr "$i" : "[^=~]\+=.*" >/dev/null; then
+            # Exact match on json field
+            json_field=$(expr "$i" : "\([^=]*\)=")
+            expect=$(expr "$i" : '[^=]*=\(.*\)')
+            actual=$(jq -r "$json_field" <<<"$output")
+            is "$actual" "$expect" "$testname : $json_field"
+        elif expr "$i" : "[^=~]\+~.*" >/dev/null; then
+            # regex match on json field
+            json_field=$(expr "$i" : "\([^~]*\)~")
+            expect=$(expr "$i" : '[^~]*~\(.*\)')
+            actual=$(jq -r "$json_field" <<<"$output")
+            like "$actual" "$expect" "$testname : $json_field"
+        else
+            # Direct string comparison
+            is "$output" "$i" "$testname : output"
+        fi
+    done
+}
+
+###################
+#  start_service  #  Run the socket listener
+###################
+service_pid=
+function start_service() {
+    # If there's a listener on the port, nothing for us to do
+    { exec 3<> /dev/tcp/$HOST/$PORT; } &>/dev/null && return
+
+    test -x $PODMAN_BIN || die "Not found: $PODMAN_BIN"
+
+    if [ "$HOST" != "localhost" ]; then
+        die "Cannot start service on non-localhost ($HOST)"
+    fi
+
+    $PODMAN_BIN --root $WORKDIR/server_root system service \
+                --time 15 \
+                tcp:127.0.0.1:$PORT \
+        &> $WORKDIR/server.log &
+    service_pid=$!
+
+    wait_for_port $HOST $PORT
+}
+
+function stop_service() {
+    # Stop the server
+    if [[ -n $service_pid ]]; then
+        kill $service_pid
+        wait $service_pid
+    fi
+}
+
+####################
+#  start_registry  #  Run a local registry
+####################
+REGISTRY_PORT=
+REGISTRY_USERNAME=
+REGISTRY_PASSWORD=
+function start_registry() {
+    # We can be invoked multiple times, e.g. from different subtests, but
+    # let's assume that once started we only kill it at the end of tests.
+    if [[ -n "$REGISTRY_PORT" ]]; then
+        return
+    fi
+
+    REGISTRY_PORT=$(random_port)
+    REGISTRY_USERNAME=u$(random_string 7)
+    REGISTRY_PASSWORD=p$(random_string 7)
+
+    local REGDIR=$WORKDIR/registry
+    local AUTHDIR=$REGDIR/auth
+    mkdir -p $AUTHDIR
+
+    mkdir -p ${REGDIR}/{root,runroot}
+    local PODMAN_REGISTRY_ARGS="--root ${REGDIR}/root --runroot ${REGDIR}/runroot"
+
+    # Give it three tries, to compensate for network flakes
+    podman ${PODMAN_REGISTRY_ARGS} pull $REGISTRY_IMAGE ||
+        podman ${PODMAN_REGISTRY_ARGS} pull $REGISTRY_IMAGE ||
+        podman ${PODMAN_REGISTRY_ARGS} pull $REGISTRY_IMAGE
+
+    # Create a local cert and credentials
+    # FIXME: is there a hidden "--quiet" flag? This is too noisy.
+    openssl req -newkey rsa:4096 -nodes -sha256 \
+            -keyout $AUTHDIR/domain.key -x509 -days 2 \
+            -out $AUTHDIR/domain.crt \
+            -subj "/C=US/ST=Foo/L=Bar/O=Red Hat, Inc./CN=registry host certificate" \
+            -addext subjectAltName=DNS:localhost
+    htpasswd -Bbn ${REGISTRY_USERNAME} ${REGISTRY_PASSWORD} \
+             > $AUTHDIR/htpasswd
+
+    # Run the registry, and wait for it to come up
+    podman ${PODMAN_REGISTRY_ARGS} run -d \
+           -p ${REGISTRY_PORT}:5000 \
+           --name registry \
+           -v $AUTHDIR:/auth:Z \
+           -e "REGISTRY_AUTH=htpasswd" \
+           -e "REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm" \
+           -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd \
+           -e REGISTRY_HTTP_TLS_CERTIFICATE=/auth/domain.crt \
+           -e REGISTRY_HTTP_TLS_KEY=/auth/domain.key \
+           ${REGISTRY_IMAGE}
+
+    wait_for_port localhost $REGISTRY_PORT
+}
+
+function stop_registry() {
+    local REGDIR=${WORKDIR}/registry
+    if [[ -d $REGDIR ]]; then
+        local OPTS="--root ${REGDIR}/root --runroot ${REGDIR}/runroot"
+        podman $OPTS stop -f -t 0 -a
+
+        # rm/rmi are important when running rootless: without them we
+        # get EPERMS in tmpdir cleanup because files are owned by subuids.
+        podman $OPTS rm -f -a
+        podman $OPTS rmi -f -a
+    fi
+}
+
+#################
+#  random_port  #  Random open port; arg is range (min-max), default 5000-5999
+#################
+function random_port() {
+    local range=${1:-5000-5999}
+
+    local port
+    for port in $(shuf -i ${range}); do
+        if ! { exec 5<> /dev/tcp/127.0.0.1/$port; } &>/dev/null; then
+            echo $port
+            return
+        fi
+    done
+
+    die "Could not find open port in range $range"
+}
+
+###################
+#  random_string  #  Pseudorandom alphanumeric string of given length
+###################
+function random_string() {
+    local length=${1:-10}
+    head /dev/urandom | tr -dc a-zA-Z0-9 | head -c$length
+}
+
+###################
+#  wait_for_port  #  Returns once port is available on host
+###################
+function wait_for_port() {
+    local host=$1                      # Probably "localhost"
+    local port=$2                      # Numeric port
+    local timeout=${3:-5}              # Optional; default to 5 seconds
+
+    # Wait
+    while [ $timeout -gt 0 ]; do
+        { exec 3<> /dev/tcp/$host/$port; } &>/dev/null && return
+        sleep 1
+        _timeout=$(( $_timeout - 1 ))
+    done
+    die "Timed out waiting for service"
+}
+
+############
+#  podman  #  Needed by some test scripts to invoke the actual podman binary
+############
+function podman() {
+    echo "\$ $PODMAN_BIN $*"                       >>$WORKDIR/output.log
+    $PODMAN_BIN --root $WORKDIR/server_root "$@"   >>$WORKDIR/output.log 2>&1
+}
+
+####################
+#  root, rootless  #  Is server rootless?
+####################
+ROOTLESS=
+function root() {
+    ! rootless
+}
+
+function rootless() {
+    if [[ -z $ROOTLESS ]]; then
+        ROOTLESS=$(curl -s http://$HOST:$PORT/v1.40/info | jq .Rootless)
+    fi
+    test "$ROOTLESS" = "true"
+}
+
+# True if cgroups v2 are enabled
+function have_cgroupsv2() {
+    cgroup_type=$(stat -f -c %T /sys/fs/cgroup)
+    test "$cgroup_type" = "cgroup2fs"
+}
+
+# END   infrastructure code
+###############################################################################
+# BEGIN sanity checks
+
+for tool in curl jq podman; do
+    type $tool &>/dev/null || die "$ME: Required tool '$tool' not found"
+done
+
+# END   sanity checks
+###############################################################################
+# BEGIN entry handler (subtest invoker)
+
+# Identify the tests to run. If called with args, use those as globs.
+tests_to_run=()
+if [ -n "$*" ]; then
+    shopt -s nullglob
+    for i; do
+        match=(${TESTS_DIR}/*${i}*.at)
+        if [ ${#match} -eq 0 ]; then
+            die "No match for $TESTS_DIR/*$i*.at"
+        fi
+        tests_to_run+=("${match[@]}")
+    done
+    shopt -u nullglob
+else
+    tests_to_run=($TESTS_DIR/*.at)
+fi
+
+start_service
+
+for i in ${tests_to_run[@]}; do
+    TEST_CONTEXT="[$(basename $i .at)]"
+    source $i
+done
+
+# END   entry handler
+###############################################################################
+
+# Clean up
+
+if [ -n "$service_pid" ]; then
+    # Remove any containers and images; this prevents the following warning:
+    #  'rm: cannot remove '/.../overlay': Device or resource busy
+    podman rm -a
+    podman rmi -af
+
+    stop_registry
+    stop_service
+fi
+
+test_count=$(<$testcounter_file)
+failure_count=$(<$failures_file)
+
+if [ -z "$PODMAN_TESTS_KEEP_WORKDIR" ]; then
+    rm -rf $WORKDIR
+fi
+
+echo "1..${test_count}"
+
+exit $failure_count

@@ -2,13 +2,12 @@ package graphdriver
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/containers/storage/pkg/idtools"
 	"github.com/containers/storage/pkg/reexec"
+	"github.com/opencontainers/selinux/pkg/pwalk"
 )
 
 const (
@@ -51,13 +50,13 @@ func chownByMapsMain() {
 	if len(toHost.UIDs()) == 0 && len(toHost.GIDs()) == 0 {
 		toHost = nil
 	}
-	chown := func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return fmt.Errorf("error walking to %q: %v", path, err)
+	chown := func(path string, info os.FileInfo, _ error) error {
+		if path == "." {
+			return nil
 		}
 		return platformLChown(path, info, toHost, toContainer)
 	}
-	if err := filepath.Walk(".", chown); err != nil {
+	if err := pwalk.Walk(".", chown); err != nil {
 		fmt.Fprintf(os.Stderr, "error during chown: %v", err)
 		os.Exit(1)
 	}

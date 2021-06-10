@@ -1,0 +1,116 @@
+#!/bin/bash
+#
+# build-testimage - script for producing a test image for podman CI
+#
+# The idea is to have a small multi-purpose image that can be pulled once
+# by system tests and used for as many tests as possible. This image
+# should live on quay.io, should be small in size, and should include
+# as many components as needed by system tests so they don't have to
+# pull other images.
+#
+# Unfortunately, "small" is incompatible with "systemd" so tests
+# still need a fedora image for that.
+#
+
+# Buildah binary
+BUILDAH=${BUILDAH:-buildah}
+
+# Tag for this new image
+YMD=$(date +%Y%m%d)
+
+# git-relative path to this script
+create_script=$(cd $(dirname $0) && git ls-files --full-name $(basename $0))
+if [ -z "$create_script" ]; then
+    create_script=$0
+fi
+
+# Creation timestamp, Zulu time
+create_time_z=$(env TZ=UTC date +'%Y-%m-%dT%H:%M:%SZ')
+
+set -ex
+
+# We'll need to create a Containerfile plus various other files to add in
+#
+# Please document the reason for all flags, apk's, and anything non-obvious
+tmpdir=$(mktemp -t -d $(basename $0).tmp.XXXXXXX)
+cd $tmpdir
+
+# 'image mount' test will confirm that this file exists and has our YMD tag
+echo $YMD >testimage-id
+
+# ...but set the timestamp on the file itself to a constant well-known
+# value, for use by the 'run --tz' test. Date value chosen for nerdiness
+# and because it's in the past. (Much as I'd love FFFFFFFF, we can't
+# use any future date because of unpredictable leap second adjustments).
+touch --date=@1600000000 testimage-id
+
+# 'pod' test will use this for --infra-command
+cat >pause <<EOF
+#!/bin/sh
+#
+# Trivial little pause script, used in one of the pod tests
+#
+echo Confirmed: testimage pause invoked as \$0
+while :; do
+    sleep 0.1
+done
+EOF
+chmod 755 pause
+
+# alpine because it's small and light and reliable
+#    - check for updates @ https://hub.docker.com/_/alpine
+# busybox-extras provides httpd needed in 500-networking.bats
+cat >Containerfile <<EOF
+ARG ARCH=please-override-arch
+FROM docker.io/\${ARCH}/alpine:3.12.0
+RUN apk add busybox-extras
+ADD testimage-id pause /home/podman/
+LABEL created_by=$create_script
+LABEL created_at=$create_time_z
+WORKDIR /home/podman
+CMD ["/bin/echo", "This container is intended for podman CI testing"]
+EOF
+
+# --squash-all    : needed by 'tree' test in 070-build.bats
+podman rmi -f testimage &> /dev/null || true
+
+# We need to use buildah because (as of 2021-02-23) only buildah has --manifest
+# and because Dan says arch emulation is not currently working on podman
+# (no further details).
+# Arch emulation on Fedora requires the qemu-user-static package.
+for arch in amd64 arm64v8 ppc64le s390x;do
+    ${BUILDAH} bud \
+               --arch=$arch \
+               --build-arg ARCH=$arch \
+               --manifest=testimage \
+               --squash \
+               .
+done
+
+# Clean up
+cd /tmp
+rm -rf $tmpdir
+
+# Tag image and push (all arches) to quay.
+remote_tag=quay.io/libpod/testimage:$YMD
+podman tag testimage ${remote_tag}
+${BUILDAH} manifest push --all  ${remote_tag} docker://${remote_tag}
+
+# Side note: there should always be a testimage tagged ':0000000<X>'
+# (eight digits, zero-padded sequence ID) in the same location; this is
+# used by tests which need to pull a non-locally-cached image. This
+# image will rarely if ever need to change, nor in fact does it even
+# have to be a copy of this testimage since all we use it for is 'true'.
+# However, it does need to be multiarch :-(
+#
+# As of 2021-02-24 it is simply busybox, because it is super small,
+# but it's complicated because of multiarch:
+#
+#    img=quay.io/libpod/testimage:0000000<current+1>
+#    buildah manifest create $img
+#    for arch in amd64 arm64v8 ppc64le s390x;do
+#        buildah pull --arch $arch docker.io/$arch/busybox:1.32.0
+#        buildah manifest add $img docker.io/$arch/busybox:1.32.0
+#    done
+#    buildah manifest push --all $img docker://$img
+#

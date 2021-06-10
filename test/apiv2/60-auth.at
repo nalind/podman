@@ -1,0 +1,23 @@
+# -*- sh -*-
+#
+# registry-related tests
+#
+
+start_registry
+
+# Test with wrong password. Confirm bad status and appropriate error message
+t POST /v1.40/auth username=$REGISTRY_USERNAME password=WrOnGPassWord serveraddress=localhost:$REGISTRY_PORT/ \
+  400 \
+  .Status~'.* invalid username/password'
+
+# Test with the right password. Confirm status message
+t POST /v1.40/auth username=$REGISTRY_USERNAME password=$REGISTRY_PASSWORD serveraddress=localhost:$REGISTRY_PORT/ \
+  200 \
+  .Status="Login Succeeded" \
+  .IdentityToken=""
+
+# Same test with url scheme provided
+t POST /v1.40/auth username=$REGISTRY_USERNAME password=$REGISTRY_PASSWORD serveraddress=https://localhost:$REGISTRY_PORT/ \
+  200 \
+  .Status="Login Succeeded" \
+  .IdentityToken=""

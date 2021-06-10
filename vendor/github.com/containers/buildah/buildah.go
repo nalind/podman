@@ -8,14 +8,16 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
+	"github.com/containers/buildah/define"
 	"github.com/containers/buildah/docker"
-	"github.com/containers/buildah/util"
-	"github.com/containers/image/types"
+	"github.com/containers/image/v5/types"
+	encconfig "github.com/containers/ocicrypt/config"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/ioutils"
-	"github.com/opencontainers/image-spec/specs-go/v1"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -23,10 +25,10 @@ import (
 const (
 	// Package is the name of this package, used in help output and to
 	// identify working containers.
-	Package = "buildah"
+	Package = define.Package
 	// Version for the Package.  Bump version in contrib/rpm/buildah.spec
 	// too.
-	Version = "1.7.2"
+	Version = define.Version
 	// The value we use to identify what type of information, currently a
 	// serialized Builder structure, we are using as per-container state.
 	// This should only be changed when we make incompatible changes to
@@ -39,67 +41,46 @@ const (
 	stateFile = Package + ".json"
 )
 
-// PullPolicy takes the value PullIfMissing, PullAlways, or PullNever.
-type PullPolicy int
+// PullPolicy takes the value PullIfMissing, PullAlways, PullIfNewer, or PullNever.
+type PullPolicy = define.PullPolicy
 
 const (
 	// PullIfMissing is one of the values that BuilderOptions.PullPolicy
 	// can take, signalling that the source image should be pulled from a
 	// registry if a local copy of it is not already present.
-	PullIfMissing PullPolicy = iota
+	PullIfMissing = define.PullIfMissing
 	// PullAlways is one of the values that BuilderOptions.PullPolicy can
 	// take, signalling that a fresh, possibly updated, copy of the image
 	// should be pulled from a registry before the build proceeds.
-	PullAlways
+	PullAlways = define.PullAlways
+	// PullIfNewer is one of the values that BuilderOptions.PullPolicy
+	// can take, signalling that the source image should only be pulled
+	// from a registry if a local copy is not already present or if a
+	// newer version the image is present on the repository.
+	PullIfNewer = define.PullIfNewer
 	// PullNever is one of the values that BuilderOptions.PullPolicy can
 	// take, signalling that the source image should not be pulled from a
 	// registry if a local copy of it is not already present.
-	PullNever
+	PullNever = define.PullNever
 )
-
-// String converts a PullPolicy into a string.
-func (p PullPolicy) String() string {
-	switch p {
-	case PullIfMissing:
-		return "PullIfMissing"
-	case PullAlways:
-		return "PullAlways"
-	case PullNever:
-		return "PullNever"
-	}
-	return fmt.Sprintf("unrecognized policy %d", p)
-}
 
 // NetworkConfigurationPolicy takes the value NetworkDefault, NetworkDisabled,
 // or NetworkEnabled.
-type NetworkConfigurationPolicy int
+type NetworkConfigurationPolicy = define.NetworkConfigurationPolicy
 
 const (
 	// NetworkDefault is one of the values that BuilderOptions.ConfigureNetwork
 	// can take, signalling that the default behavior should be used.
-	NetworkDefault NetworkConfigurationPolicy = iota
+	NetworkDefault = define.NetworkDefault
 	// NetworkDisabled is one of the values that BuilderOptions.ConfigureNetwork
 	// can take, signalling that network interfaces should NOT be configured for
 	// newly-created network namespaces.
-	NetworkDisabled
+	NetworkDisabled = define.NetworkDisabled
 	// NetworkEnabled is one of the values that BuilderOptions.ConfigureNetwork
 	// can take, signalling that network interfaces should be configured for
 	// newly-created network namespaces.
-	NetworkEnabled
+	NetworkEnabled = define.NetworkEnabled
 )
-
-// String formats a NetworkConfigurationPolicy as a string.
-func (p NetworkConfigurationPolicy) String() string {
-	switch p {
-	case NetworkDefault:
-		return "NetworkDefault"
-	case NetworkDisabled:
-		return "NetworkDisabled"
-	case NetworkEnabled:
-		return "NetworkEnabled"
-	}
-	return fmt.Sprintf("unknown NetworkConfigurationPolicy %d", p)
-}
 
 // Builder objects are used to represent containers which are being used to
 // build images.  They also carry potential updates which will be applied to
@@ -107,6 +88,9 @@ func (p NetworkConfigurationPolicy) String() string {
 // image.
 type Builder struct {
 	store storage.Store
+
+	// Logger is the logrus logger to write log messages with
+	Logger *logrus.Logger `json:"-"`
 
 	// Args define variables that users can pass at build-time to the builder
 	Args map[string]string
@@ -119,6 +103,9 @@ type Builder struct {
 	// FromImageID is the ID of the source image which was used to create
 	// the container, if one was used.  It should not be modified.
 	FromImageID string `json:"image-id"`
+	// FromImageDigest is the digest of the source image which was used to
+	// create the container, if one was used.  It should not be modified.
+	FromImageDigest string `json:"image-digest"`
 	// Config is the source image's configuration.  It should not be
 	// modified.
 	Config []byte `json:"config,omitempty"`
@@ -152,15 +139,15 @@ type Builder struct {
 	DefaultMountsFilePath string `json:"defaultMountsFilePath,omitempty"`
 
 	// Isolation controls how we handle "RUN" statements and the Run() method.
-	Isolation Isolation
+	Isolation define.Isolation
 	// NamespaceOptions controls how we set up the namespaces for processes that we run in the container.
-	NamespaceOptions NamespaceOptions
+	NamespaceOptions define.NamespaceOptions
 	// ConfigureNetwork controls whether or not network interfaces and
 	// routing are configured for a new network namespace (i.e., when not
 	// joining another's namespace and not just using the host's
 	// namespace), effectively deciding whether or not the process has a
 	// usable network.
-	ConfigureNetwork NetworkConfigurationPolicy
+	ConfigureNetwork define.NetworkConfigurationPolicy
 	// CNIPluginPath is the location of CNI plugin helpers, if they should be
 	// run from a location other than the default location.
 	CNIPluginPath string
@@ -168,14 +155,9 @@ type Builder struct {
 	// the default configuration directory shouldn't be used.
 	CNIConfigDir string
 	// ID mapping options to use when running processes in the container with non-host user namespaces.
-	IDMappingOptions IDMappingOptions
-	// AddCapabilities is a list of capabilities to add to the default set when running
-	// commands in the container.
-	AddCapabilities []string
-	// DropCapabilities is a list of capabilities to remove from the default set,
-	// after processing the AddCapabilities set, when running commands in the container.
-	// If a capability appears in both lists, it will be dropped.
-	DropCapabilities []string
+	IDMappingOptions define.IDMappingOptions
+	// Capabilities is a list of capabilities to use when running commands in the container.
+	Capabilities []string
 	// PrependedEmptyLayers are history entries that we'll add to a
 	// committed image, after any history items that we inherit from a base
 	// image, but before the history item for the layer that we're
@@ -185,12 +167,17 @@ type Builder struct {
 	// committed image after the history item for the layer that we're
 	// committing.
 	AppendedEmptyLayers []v1.History
-
-	CommonBuildOpts *CommonBuildOptions
+	CommonBuildOpts     *define.CommonBuildOptions
 	// TopLayer is the top layer of the image
 	TopLayer string
 	// Format for the build Image
 	Format string
+	// TempVolumes are temporary mount points created during container runs
+	TempVolumes map[string]bool
+	// ContentDigester counts the digest of all Add()ed content
+	ContentDigester CompositeDigester
+	// Devices are the additional devices to add to the containers
+	Devices define.ContainerDevices
 }
 
 // BuilderInfo are used as objects to display container information
@@ -198,6 +185,7 @@ type BuilderInfo struct {
 	Type                  string
 	FromImage             string
 	FromImageID           string
+	FromImageDigest       string
 	Config                string
 	Manifest              string
 	Container             string
@@ -211,15 +199,14 @@ type BuilderInfo struct {
 	Docker                docker.V2Image
 	DefaultMountsFilePath string
 	Isolation             string
-	NamespaceOptions      NamespaceOptions
+	NamespaceOptions      define.NamespaceOptions
+	Capabilities          []string
 	ConfigureNetwork      string
 	CNIPluginPath         string
 	CNIConfigDir          string
-	IDMappingOptions      IDMappingOptions
-	DefaultCapabilities   []string
-	AddCapabilities       []string
-	DropCapabilities      []string
+	IDMappingOptions      define.IDMappingOptions
 	History               []v1.History
+	Devices               define.ContainerDevices
 }
 
 // GetBuildInfo gets a pointer to a Builder object and returns a BuilderInfo object from it.
@@ -227,20 +214,13 @@ type BuilderInfo struct {
 func GetBuildInfo(b *Builder) BuilderInfo {
 	history := copyHistory(b.OCIv1.History)
 	history = append(history, copyHistory(b.PrependedEmptyLayers)...)
-	now := time.Now().UTC()
-	created := &now
-	history = append(history, v1.History{
-		Created:    created,
-		CreatedBy:  b.ImageCreatedBy,
-		Author:     b.Maintainer(),
-		Comment:    b.ImageHistoryComment,
-		EmptyLayer: false,
-	})
 	history = append(history, copyHistory(b.AppendedEmptyLayers)...)
+	sort.Strings(b.Capabilities)
 	return BuilderInfo{
 		Type:                  b.Type,
 		FromImage:             b.FromImage,
 		FromImageID:           b.FromImageID,
+		FromImageDigest:       b.FromImageDigest,
 		Config:                string(b.Config),
 		Manifest:              string(b.Manifest),
 		Container:             b.Container,
@@ -259,63 +239,14 @@ func GetBuildInfo(b *Builder) BuilderInfo {
 		CNIPluginPath:         b.CNIPluginPath,
 		CNIConfigDir:          b.CNIConfigDir,
 		IDMappingOptions:      b.IDMappingOptions,
-		DefaultCapabilities:   append([]string{}, util.DefaultCapabilities...),
-		AddCapabilities:       append([]string{}, b.AddCapabilities...),
-		DropCapabilities:      append([]string{}, b.DropCapabilities...),
+		Capabilities:          b.Capabilities,
 		History:               history,
+		Devices:               b.Devices,
 	}
 }
 
 // CommonBuildOptions are resources that can be defined by flags for both buildah from and build-using-dockerfile
-type CommonBuildOptions struct {
-	// AddHost is the list of hostnames to add to the build container's /etc/hosts.
-	AddHost []string
-	// CgroupParent is the path to cgroups under which the cgroup for the container will be created.
-	CgroupParent string
-	// CPUPeriod limits the CPU CFS (Completely Fair Scheduler) period
-	CPUPeriod uint64
-	// CPUQuota limits the CPU CFS (Completely Fair Scheduler) quota
-	CPUQuota int64
-	// CPUShares (relative weight
-	CPUShares uint64
-	// CPUSetCPUs in which to allow execution (0-3, 0,1)
-	CPUSetCPUs string
-	// CPUSetMems memory nodes (MEMs) in which to allow execution (0-3, 0,1). Only effective on NUMA systems.
-	CPUSetMems string
-	// Memory is the upper limit (in bytes) on how much memory running containers can use.
-	Memory int64
-	// MemorySwap limits the amount of memory and swap together.
-	MemorySwap int64
-	// LabelOpts is the a slice of fields of an SELinux context, given in "field:pair" format, or "disable".
-	// Recognized field names are "role", "type", and "level".
-	LabelOpts []string
-	// SeccompProfilePath is the pathname of a seccomp profile.
-	SeccompProfilePath string
-	// ApparmorProfile is the name of an apparmor profile.
-	ApparmorProfile string
-	// ShmSize is the "size" value to use when mounting an shmfs on the container's /dev/shm directory.
-	ShmSize string
-	// Ulimit specifies resource limit options, in the form type:softlimit[:hardlimit].
-	// These types are recognized:
-	// "core": maximimum core dump size (ulimit -c)
-	// "cpu": maximum CPU time (ulimit -t)
-	// "data": maximum size of a process's data segment (ulimit -d)
-	// "fsize": maximum size of new files (ulimit -f)
-	// "locks": maximum number of file locks (ulimit -x)
-	// "memlock": maximum amount of locked memory (ulimit -l)
-	// "msgqueue": maximum amount of data in message queues (ulimit -q)
-	// "nice": niceness adjustment (nice -n, ulimit -e)
-	// "nofile": maximum number of open files (ulimit -n)
-	// "nproc": maximum number of processes (ulimit -u)
-	// "rss": maximum size of a process's (ulimit -m)
-	// "rtprio": maximum real-time scheduling priority (ulimit -r)
-	// "rttime": maximum amount of real-time execution between blocking syscalls
-	// "sigpending": maximum number of pending signals (ulimit -i)
-	// "stack": maximum stack size (ulimit -s)
-	Ulimit []string
-	// Volumes to bind mount into the container
-	Volumes []string
-}
+type CommonBuildOptions = define.CommonBuildOptions
 
 // BuilderOptions are used to initialize a new Builder.
 type BuilderOptions struct {
@@ -331,7 +262,7 @@ type BuilderOptions struct {
 	// PullPolicy decides whether or not we should pull the image that
 	// we're using as a base image.  It should be PullIfMissing,
 	// PullAlways, or PullNever.
-	PullPolicy PullPolicy
+	PullPolicy define.PullPolicy
 	// Registry is a value which is prepended to the image's name, if it
 	// needs to be pulled and the image name alone can not be resolved to a
 	// reference to a source image.  No separator is implicitly added.
@@ -360,16 +291,16 @@ type BuilderOptions struct {
 	DefaultMountsFilePath string
 	// Isolation controls how we handle "RUN" statements and the Run()
 	// method.
-	Isolation Isolation
+	Isolation define.Isolation
 	// NamespaceOptions controls how we set up namespaces for processes that
 	// we might need to run using the container's root filesystem.
-	NamespaceOptions NamespaceOptions
+	NamespaceOptions define.NamespaceOptions
 	// ConfigureNetwork controls whether or not network interfaces and
 	// routing are configured for a new network namespace (i.e., when not
 	// joining another's namespace and not just using the host's
 	// namespace), effectively deciding whether or not the process has a
 	// usable network.
-	ConfigureNetwork NetworkConfigurationPolicy
+	ConfigureNetwork define.NetworkConfigurationPolicy
 	// CNIPluginPath is the location of CNI plugin helpers, if they should be
 	// run from a location other than the default location.
 	CNIPluginPath string
@@ -377,18 +308,25 @@ type BuilderOptions struct {
 	// the default configuration directory shouldn't be used.
 	CNIConfigDir string
 	// ID mapping options to use if we're setting up our own user namespace.
-	IDMappingOptions *IDMappingOptions
-	// AddCapabilities is a list of capabilities to add to the default set when
+	IDMappingOptions *define.IDMappingOptions
+	// Capabilities is a list of capabilities to use when
 	// running commands in the container.
-	AddCapabilities []string
-	// DropCapabilities is a list of capabilities to remove from the default set,
-	// after processing the AddCapabilities set, when running commands in the
-	// container.  If a capability appears in both lists, it will be dropped.
-	DropCapabilities []string
-
-	CommonBuildOpts *CommonBuildOptions
+	Capabilities    []string
+	CommonBuildOpts *define.CommonBuildOptions
 	// Format for the container image
 	Format string
+	// Devices are the additional devices to add to the containers
+	Devices define.ContainerDevices
+	//DefaultEnv for containers
+	DefaultEnv []string
+	// MaxPullRetries is the maximum number of attempts we'll make to pull
+	// any one image from the external registry if the first attempt fails.
+	MaxPullRetries int
+	// PullRetryDelay is how long to wait before retrying a pull attempt.
+	PullRetryDelay time.Duration
+	// OciDecryptConfig contains the config that can be used to decrypt an image if it is
+	// encrypted if non-nil. If nil, it does not attempt to decrypt an image.
+	OciDecryptConfig *encconfig.DecryptConfig
 }
 
 // ImportOptions are used to initialize a Builder from an existing container
@@ -422,6 +360,9 @@ type ImportFromImageOptions struct {
 
 // NewBuilder creates a new build container.
 func NewBuilder(ctx context.Context, store storage.Store, options BuilderOptions) (*Builder, error) {
+	if options.CommonBuildOpts == nil {
+		options.CommonBuildOpts = &CommonBuildOptions{}
+	}
 	return newBuilder(ctx, store, options)
 }
 
@@ -446,17 +387,18 @@ func OpenBuilder(store storage.Store, container string) (*Builder, error) {
 	}
 	buildstate, err := ioutil.ReadFile(filepath.Join(cdir, stateFile))
 	if err != nil {
-		return nil, errors.Wrapf(err, "error reading %q", filepath.Join(cdir, stateFile))
+		return nil, err
 	}
 	b := &Builder{}
 	if err = json.Unmarshal(buildstate, &b); err != nil {
 		return nil, errors.Wrapf(err, "error parsing %q, read from %q", string(buildstate), filepath.Join(cdir, stateFile))
 	}
 	if b.Type != containerType {
-		return nil, errors.Errorf("container %q is not a %s container (is a %q container)", container, Package, b.Type)
+		return nil, errors.Errorf("container %q is not a %s container (is a %q container)", container, define.Package, b.Type)
 	}
 	b.store = store
 	b.fixupConfig()
+	b.setupLogger()
 	return b, nil
 }
 
@@ -469,7 +411,7 @@ func OpenBuilderByPath(store storage.Store, path string) (*Builder, error) {
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return nil, errors.Wrapf(err, "error turning %q into an absolute path", path)
+		return nil, err
 	}
 	builderMatchesPath := func(b *Builder, path string) bool {
 		return (b.MountPoint == path)
@@ -485,19 +427,20 @@ func OpenBuilderByPath(store storage.Store, path string) (*Builder, error) {
 				logrus.Debugf("error reading %q: %v, ignoring container %q", filepath.Join(cdir, stateFile), err, container.ID)
 				continue
 			}
-			return nil, errors.Wrapf(err, "error reading %q", filepath.Join(cdir, stateFile))
+			return nil, err
 		}
 		b := &Builder{}
 		err = json.Unmarshal(buildstate, &b)
 		if err == nil && b.Type == containerType && builderMatchesPath(b, abs) {
 			b.store = store
 			b.fixupConfig()
+			b.setupLogger()
 			return b, nil
 		}
 		if err != nil {
 			logrus.Debugf("error parsing %q, read from %q: %v", string(buildstate), filepath.Join(cdir, stateFile), err)
 		} else if b.Type != containerType {
-			logrus.Debugf("container %q is not a %s container (is a %q container)", container.ID, Package, b.Type)
+			logrus.Debugf("container %q is not a %s container (is a %q container)", container.ID, define.Package, b.Type)
 		}
 	}
 	return nil, storage.ErrContainerUnknown
@@ -521,12 +464,13 @@ func OpenAllBuilders(store storage.Store) (builders []*Builder, err error) {
 				logrus.Debugf("error reading %q: %v, ignoring container %q", filepath.Join(cdir, stateFile), err, container.ID)
 				continue
 			}
-			return nil, errors.Wrapf(err, "error reading %q", filepath.Join(cdir, stateFile))
+			return nil, err
 		}
 		b := &Builder{}
 		err = json.Unmarshal(buildstate, &b)
 		if err == nil && b.Type == containerType {
 			b.store = store
+			b.setupLogger()
 			b.fixupConfig()
 			builders = append(builders, b)
 			continue
@@ -534,7 +478,7 @@ func OpenAllBuilders(store storage.Store) (builders []*Builder, err error) {
 		if err != nil {
 			logrus.Debugf("error parsing %q, read from %q: %v", string(buildstate), filepath.Join(cdir, stateFile), err)
 		} else if b.Type != containerType {
-			logrus.Debugf("container %q is not a %s container (is a %q container)", container.ID, Package, b.Type)
+			logrus.Debugf("container %q is not a %s container (is a %q container)", container.ID, define.Package, b.Type)
 		}
 	}
 	return builders, nil

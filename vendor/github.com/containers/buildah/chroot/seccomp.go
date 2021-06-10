@@ -3,7 +3,7 @@
 package chroot
 
 import (
-	"github.com/opencontainers/runtime-spec/specs-go"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	libseccomp "github.com/seccomp/libseccomp-golang"
 	"github.com/sirupsen/logrus"
@@ -15,18 +15,28 @@ func setSeccomp(spec *specs.Spec) error {
 	if spec.Linux.Seccomp == nil {
 		return nil
 	}
-	mapAction := func(specAction specs.LinuxSeccompAction) libseccomp.ScmpAction {
+	mapAction := func(specAction specs.LinuxSeccompAction, errnoRet *uint) libseccomp.ScmpAction {
 		switch specAction {
 		case specs.ActKill:
 			return libseccomp.ActKill
 		case specs.ActTrap:
 			return libseccomp.ActTrap
 		case specs.ActErrno:
-			return libseccomp.ActErrno
+			action := libseccomp.ActErrno
+			if errnoRet != nil {
+				action = action.SetReturnCode(int16(*errnoRet))
+			}
+			return action
 		case specs.ActTrace:
 			return libseccomp.ActTrace
 		case specs.ActAllow:
 			return libseccomp.ActAllow
+		case specs.ActLog:
+			return libseccomp.ActLog
+		case specs.ActKillProcess:
+			return libseccomp.ActKillProcess
+		default:
+			logrus.Errorf("unmappable action %v", specAction)
 		}
 		return libseccomp.ActInvalid
 	}
@@ -68,6 +78,8 @@ func setSeccomp(spec *specs.Spec) error {
 			/* fallthrough */ /* for now */
 		case specs.ArchPARISC64:
 			/* fallthrough */ /* for now */
+		default:
+			logrus.Errorf("unmappable arch %v", specArch)
 		}
 		return libseccomp.ArchInvalid
 	}
@@ -87,11 +99,13 @@ func setSeccomp(spec *specs.Spec) error {
 			return libseccomp.CompareGreater
 		case specs.OpMaskedEqual:
 			return libseccomp.CompareMaskedEqual
+		default:
+			logrus.Errorf("unmappable op %v", op)
 		}
 		return libseccomp.CompareInvalid
 	}
 
-	filter, err := libseccomp.NewFilter(mapAction(spec.Linux.Seccomp.DefaultAction))
+	filter, err := libseccomp.NewFilter(mapAction(spec.Linux.Seccomp.DefaultAction, nil))
 	if err != nil {
 		return errors.Wrapf(err, "error creating seccomp filter with default action %q", spec.Linux.Seccomp.DefaultAction)
 	}
@@ -112,21 +126,38 @@ func setSeccomp(spec *specs.Spec) error {
 		}
 		for scnum := range scnames {
 			if len(rule.Args) == 0 {
-				if err = filter.AddRule(scnum, mapAction(rule.Action)); err != nil {
+				if err = filter.AddRule(scnum, mapAction(rule.Action, rule.ErrnoRet)); err != nil {
 					return errors.Wrapf(err, "error adding a rule (%q:%q) to seccomp filter", scnames[scnum], rule.Action)
 				}
 				continue
 			}
 			var conditions []libseccomp.ScmpCondition
+			opsAreAllEquality := true
 			for _, arg := range rule.Args {
 				condition, err := libseccomp.MakeCondition(arg.Index, mapOp(arg.Op), arg.Value, arg.ValueTwo)
 				if err != nil {
 					return errors.Wrapf(err, "error building a seccomp condition %d:%v:%d:%d", arg.Index, arg.Op, arg.Value, arg.ValueTwo)
 				}
+				if arg.Op != specs.OpEqualTo {
+					opsAreAllEquality = false
+				}
 				conditions = append(conditions, condition)
 			}
-			if err = filter.AddRuleConditional(scnum, mapAction(rule.Action), conditions); err != nil {
-				return errors.Wrapf(err, "error adding a conditional rule (%q:%q) to seccomp filter", scnames[scnum], rule.Action)
+			if err = filter.AddRuleConditional(scnum, mapAction(rule.Action, rule.ErrnoRet), conditions); err != nil {
+				// Okay, if the rules specify multiple equality
+				// checks, assume someone thought that they
+				// were OR'd, when in fact they're ordinarily
+				// supposed to be AND'd.  Break them up into
+				// different rules to get that OR effect.
+				if len(rule.Args) > 1 && opsAreAllEquality && err.Error() == "two checks on same syscall argument" {
+					for i := range conditions {
+						if err = filter.AddRuleConditional(scnum, mapAction(rule.Action, rule.ErrnoRet), conditions[i:i+1]); err != nil {
+							return errors.Wrapf(err, "error adding a conditional rule (%q:%q[%d]) to seccomp filter", scnames[scnum], rule.Action, i)
+						}
+					}
+				} else {
+					return errors.Wrapf(err, "error adding a conditional rule (%q:%q) to seccomp filter", scnames[scnum], rule.Action)
+				}
 			}
 		}
 	}

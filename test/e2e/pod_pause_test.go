@@ -1,11 +1,9 @@
-// +build !remoteclient
-
 package integration
 
 import (
 	"os"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -17,21 +15,21 @@ var _ = Describe("Podman pod pause", func() {
 		podmanTest *PodmanTestIntegration
 	)
 
-	pausedState := "Paused"
+	pausedState := "paused"
 
 	BeforeEach(func() {
-		SkipIfRootless()
+		SkipIfRootlessCgroupsV1("Pause is not supported in cgroups v1")
 		tempdir, err = CreateTempDirInTempDir()
 		if err != nil {
 			os.Exit(1)
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.RestoreAllArtifacts()
+		podmanTest.SeedImages()
 	})
 
 	AfterEach(func() {
-		podmanTest.CleanupPod()
+		podmanTest.Cleanup()
 		f := CurrentGinkgoTestDescription()
 		processTestResult(f)
 
@@ -40,17 +38,17 @@ var _ = Describe("Podman pod pause", func() {
 	It("podman pod pause bogus pod", func() {
 		session := podmanTest.Podman([]string{"pod", "pause", "foobar"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Not(Equal(0)))
+		Expect(session).To(ExitWithError())
 	})
 
 	It("podman unpause bogus pod", func() {
 		session := podmanTest.Podman([]string{"pod", "unpause", "foobar"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Not(Equal(0)))
+		Expect(session).To(ExitWithError())
 	})
 
 	It("podman pod pause a created pod by id", func() {
-		_, ec, podid := podmanTest.CreatePod("")
+		_, ec, podid := podmanTest.CreatePod(nil)
 		Expect(ec).To(Equal(0))
 
 		result := podmanTest.Podman([]string{"pod", "pause", podid})
@@ -59,7 +57,7 @@ var _ = Describe("Podman pod pause", func() {
 	})
 
 	It("podman pod pause a running pod by id", func() {
-		_, ec, podid := podmanTest.CreatePod("")
+		_, ec, podid := podmanTest.CreatePod(nil)
 		Expect(ec).To(Equal(0))
 
 		session := podmanTest.RunTopContainerInPod("", podid)
@@ -80,7 +78,7 @@ var _ = Describe("Podman pod pause", func() {
 	})
 
 	It("podman unpause a running pod by id", func() {
-		_, ec, podid := podmanTest.CreatePod("")
+		_, ec, podid := podmanTest.CreatePod(nil)
 		Expect(ec).To(Equal(0))
 
 		session := podmanTest.RunTopContainerInPod("", podid)
@@ -95,7 +93,7 @@ var _ = Describe("Podman pod pause", func() {
 	})
 
 	It("podman pod pause a running pod by name", func() {
-		_, ec, _ := podmanTest.CreatePod("test1")
+		_, ec, _ := podmanTest.CreatePod(map[string][]string{"--name": {"test1"}})
 		Expect(ec).To(Equal(0))
 
 		session := podmanTest.RunTopContainerInPod("", "test1")

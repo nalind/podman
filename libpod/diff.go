@@ -1,12 +1,13 @@
 package libpod
 
 import (
-	"github.com/containers/libpod/libpod/layers"
+	"github.com/containers/common/libimage"
+	"github.com/containers/podman/v3/libpod/layers"
 	"github.com/containers/storage/pkg/archive"
 	"github.com/pkg/errors"
 )
 
-var containerMounts = map[string]bool{
+var initInodes = map[string]bool{
 	"/dev":               true,
 	"/etc/hostname":      true,
 	"/etc/hosts":         true,
@@ -16,6 +17,7 @@ var containerMounts = map[string]bool{
 	"/run/.containerenv": true,
 	"/run/secrets":       true,
 	"/sys":               true,
+	"/etc/mtab":          true,
 }
 
 // GetDiff returns the differences between the two images, layers, or containers
@@ -35,7 +37,7 @@ func (r *Runtime) GetDiff(from, to string) ([]archive.Change, error) {
 	changes, err := r.store.Changes(fromLayer, toLayer)
 	if err == nil {
 		for _, c := range changes {
-			if containerMounts[c.Path] {
+			if initInodes[c.Path] {
 				continue
 			}
 			rchanges = append(rchanges, c)
@@ -49,19 +51,23 @@ func (r *Runtime) GetDiff(from, to string) ([]archive.Change, error) {
 // If the id matches a layer, the top layer id is returned
 func (r *Runtime) getLayerID(id string) (string, error) {
 	var toLayer string
-	toImage, err := r.imageRuntime.NewFromLocal(id)
+	toImage, _, err := r.libimageRuntime.LookupImage(id, &libimage.LookupImageOptions{IgnorePlatform: true})
+	if err == nil {
+		return toImage.TopLayer(), nil
+	}
+
+	targetID, err := r.store.Lookup(id)
 	if err != nil {
-		toCtr, err := r.store.Container(id)
+		targetID = id
+	}
+	toCtr, err := r.store.Container(targetID)
+	if err != nil {
+		toLayer, err = layers.FullID(r.store, targetID)
 		if err != nil {
-			toLayer, err = layers.FullID(r.store, id)
-			if err != nil {
-				return "", errors.Errorf("layer, image, or container %s does not exist", id)
-			}
-		} else {
-			toLayer = toCtr.LayerID
+			return "", errors.Errorf("layer, image, or container %s does not exist", id)
 		}
 	} else {
-		toLayer = toImage.TopLayer()
+		toLayer = toCtr.LayerID
 	}
 	return toLayer, nil
 }

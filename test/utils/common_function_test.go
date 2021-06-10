@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"strings"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/ginkgo/extensions/table"
 	. "github.com/onsi/gomega"
@@ -64,7 +64,7 @@ var _ = Describe("Common functions test", func() {
 				Expect(host.Version).To(Equal(strings.Trim(ver, "\"")))
 			}
 		},
-		Entry("Configure file is not exist.", "/tmp/notexist", "", "", true),
+		Entry("Configure file is not exist.", "/tmp/nonexistent", "", "", true),
 		Entry("Item value with and without \"", "/tmp/os-release.test", "fedora", "\"28\"", false),
 		Entry("Item empty with and without \"", "/tmp/os-release.test", "", "\"\"", false),
 	)
@@ -75,10 +75,10 @@ var _ = Describe("Common functions test", func() {
 			Expect(newer).To(Equal(expect), "Version compare results is not as expect.")
 			Expect(err == nil).To(Equal(isNil), "Error is not as expect.")
 		},
-		Entry("Invlid kernel version: 0", "0", false, false),
+		Entry("Invalid kernel version: 0", "0", false, false),
 		Entry("Older kernel version:0.0", "0.0", true, true),
 		Entry("Newer kernel version: 100.17.14", "100.17.14", false, true),
-		Entry("Invlid kernel version: I am not a kernel version", "I am not a kernel version", false, false),
+		Entry("Invalid kernel version: I am not a kernel version", "I am not a kernel version", false, false),
 	)
 
 	DescribeTable("Test TestIsCommandAvailable",
@@ -115,7 +115,7 @@ var _ = Describe("Common functions test", func() {
 		bytes, _ := ioutil.ReadAll(read)
 		json.Unmarshal(bytes, compareData)
 
-		Expect(reflect.DeepEqual(testData, compareData)).To(BeTrue(), "Data chaned after we store it to file.")
+		Expect(reflect.DeepEqual(testData, compareData)).To(BeTrue(), "Data changed after we store it to file.")
 	})
 
 	DescribeTable("Test Containerized",
@@ -142,7 +142,7 @@ var _ = Describe("Common functions test", func() {
 			Expect(Containerized()).To(Equal(expect))
 		},
 		Entry("Set container in env", "", true, false, true),
-		Entry("Can not read from file", "/tmp/notexist", false, false, false),
+		Entry("Can not read from file", "/tmp/nonexistent", false, false, false),
 		Entry("Docker in cgroup file", "/tmp/cgroup.test", false, true, true),
 		Entry("Docker not in cgroup file", "/tmp/cgroup.test", false, true, false),
 	)

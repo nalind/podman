@@ -1,12 +1,11 @@
-// +build !remoteclient
-
 package integration
 
 import (
 	"os"
+	"os/exec"
 	"strings"
 
-	. "github.com/containers/libpod/test/utils"
+	. "github.com/containers/podman/v3/test/utils"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -25,7 +24,7 @@ var _ = Describe("Podman run ns", func() {
 		}
 		podmanTest = PodmanTestCreate(tempdir)
 		podmanTest.Setup()
-		podmanTest.RestoreArtifact(fedoraMinimal)
+		podmanTest.SeedImages()
 	})
 
 	AfterEach(func() {
@@ -36,6 +35,7 @@ var _ = Describe("Podman run ns", func() {
 	})
 
 	It("podman run pidns test", func() {
+		SkipIfRootlessCgroupsV1("Not supported for rootless + CGroupsV1")
 		session := podmanTest.Podman([]string{"run", fedoraMinimal, "bash", "-c", "echo $$"})
 		session.WaitWithDefaultTimeout()
 		Expect(session.ExitCode()).To(Equal(0))
@@ -48,7 +48,16 @@ var _ = Describe("Podman run ns", func() {
 
 		session = podmanTest.Podman([]string{"run", "--pid=badpid", fedoraMinimal, "bash", "-c", "echo $$"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).To(Not(Equal(0)))
+		Expect(session).To(ExitWithError())
+	})
+
+	It("podman run --cgroup private test", func() {
+		session := podmanTest.Podman([]string{"run", "--cgroupns=private", fedoraMinimal, "cat", "/proc/self/cgroup"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+
+		output := session.OutputToString()
+		Expect(output).ToNot(ContainSubstring("slice"))
 	})
 
 	It("podman run ipcns test", func() {
@@ -93,6 +102,45 @@ var _ = Describe("Podman run ns", func() {
 	It("podman run bad ipc pid test", func() {
 		session := podmanTest.Podman([]string{"run", "--ipc=badpid", fedoraMinimal, "bash", "-c", "echo $$"})
 		session.WaitWithDefaultTimeout()
-		Expect(session.ExitCode()).ToNot(Equal(0))
+		Expect(session).To(ExitWithError())
 	})
+
+	It("podman run mounts fresh cgroup", func() {
+		session := podmanTest.Podman([]string{"run", fedoraMinimal, "grep", "cgroup", "/proc/self/mountinfo"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		output := session.OutputToString()
+		Expect(output).ToNot(ContainSubstring(".."))
+	})
+
+	It("podman run --ipc=host --pid=host", func() {
+		SkipIfRootlessCgroupsV1("Not supported for rootless + CGroupsV1")
+		cmd := exec.Command("ls", "-l", "/proc/self/ns/pid")
+		res, err := cmd.Output()
+		Expect(err).To(BeNil())
+		fields := strings.Split(string(res), " ")
+		hostPidNS := strings.TrimSuffix(fields[len(fields)-1], "\n")
+
+		cmd = exec.Command("ls", "-l", "/proc/self/ns/ipc")
+		res, err = cmd.Output()
+		Expect(err).To(BeNil())
+		fields = strings.Split(string(res), " ")
+		hostIpcNS := strings.TrimSuffix(fields[len(fields)-1], "\n")
+
+		session := podmanTest.Podman([]string{"run", "--ipc=host", "--pid=host", ALPINE, "ls", "-l", "/proc/self/ns/pid"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		fields = strings.Split(session.OutputToString(), " ")
+		ctrPidNS := strings.TrimSuffix(fields[len(fields)-1], "\n")
+
+		session = podmanTest.Podman([]string{"run", "--ipc=host", "--pid=host", ALPINE, "ls", "-l", "/proc/self/ns/ipc"})
+		session.WaitWithDefaultTimeout()
+		Expect(session.ExitCode()).To(Equal(0))
+		fields = strings.Split(session.OutputToString(), " ")
+		ctrIpcNS := strings.TrimSuffix(fields[len(fields)-1], "\n")
+
+		Expect(hostPidNS).To(Equal(ctrPidNS))
+		Expect(hostIpcNS).To(Equal(ctrIpcNS))
+	})
+
 })

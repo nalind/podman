@@ -3,195 +3,172 @@
 # Library of common, shared utility functions.  This file is intended
 # to be sourced by other scripts, not called directly.
 
-# Under some contexts these values are not set, make sure they are.
-export USER="$(whoami)"
-export HOME="$(getent passwd $USER | cut -d : -f 6)"
+# BEGIN Global export of all variables
+set -a
 
-# These are normally set by cirrus, but can't be for VMs setup by hack/get_ci_vm.sh
-# Pick some reasonable defaults
-ENVLIB=${ENVLIB:-.bash_profile}
-CIRRUS_WORKING_DIR="${CIRRUS_WORKING_DIR:-/var/tmp/go/src/github.com/containers/libpod}"
+# Due to differences across platforms and runtime execution environments,
+# handling of the (otherwise) default shell setup is non-uniform.  Rather
+# than attempt to workaround differences, simply force-load/set required
+# items every time this library is utilized.
+USER="$(whoami)"
+HOME="$(getent passwd $USER | cut -d : -f 6)"
+# Some platforms set and make this read-only
+[[ -n "$UID" ]] || \
+    UID=$(getent passwd $USER | cut -d : -f 3)
+
+# Automation library installed at image-build time,
+# defining $AUTOMATION_LIB_PATH in this file.
+if [[ -r "/etc/automation_environment" ]]; then
+    source /etc/automation_environment
+fi
+# shellcheck disable=SC2154
+if [[ -n "$AUTOMATION_LIB_PATH" ]]; then
+        # shellcheck source=/usr/share/automation/lib/common_lib.sh
+        source $AUTOMATION_LIB_PATH/common_lib.sh
+else
+    (
+    echo "WARNING: It does not appear that containers/automation was installed."
+    echo "         Functionality of most of this library will be negatively impacted"
+    echo "         This ${BASH_SOURCE[0]} was loaded by ${BASH_SOURCE[1]}"
+    ) > /dev/stderr
+fi
+
+# Managed by setup_environment.sh; holds task-specific definitions.
+if [[ -r "/etc/ci_environment" ]]; then source /etc/ci_environment; fi
+
+OS_RELEASE_ID="$(source /etc/os-release; echo $ID)"
+# GCE image-name compatible string representation of distribution _major_ version
+OS_RELEASE_VER="$(source /etc/os-release; echo $VERSION_ID | tr -d '.')"
+# Combined to ease some usage
+OS_REL_VER="${OS_RELEASE_ID}-${OS_RELEASE_VER}"
+# This is normally set from .cirrus.yml but default is necessary when
+# running under hack/get_ci_vm.sh since it cannot infer the value.
+DISTRO_NV="${DISTRO_NV:-$OS_REL_VER}"
+
+# Essential default paths, many are overridden when executing under Cirrus-CI
+GOPATH="${GOPATH:-/var/tmp/go}"
+if type -P go &> /dev/null
+then
+    # Cirrus-CI caches $GOPATH contents
+    export GOCACHE="${GOCACHE:-$GOPATH/cache/go-build}"
+    # called processes like `make` and other tools need these vars.
+    eval "export $(go env)"
+
+    # Ensure compiled tooling is reachable
+    PATH="$PATH:$GOPATH/bin:$HOME/.local/bin"
+fi
+CIRRUS_WORKING_DIR="${CIRRUS_WORKING_DIR:-$(realpath $(dirname ${BASH_SOURCE[0]})/../../)}"
 GOSRC="${GOSRC:-$CIRRUS_WORKING_DIR}"
+PATH="$HOME/bin:/usr/local/bin:$PATH"
+LD_LIBRARY_PATH="/usr/local/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+# Saves typing / in case location ever moves
 SCRIPT_BASE=${SCRIPT_BASE:-./contrib/cirrus}
-PACKER_BASE=${PACKER_BASE:-./contrib/cirrus/packer}
-CIRRUS_BUILD_ID=${CIRRUS_BUILD_ID:-DEADBEEF}  # a human
-CIRRUS_BASE_SHA=${CIRRUS_BASE_SHA:-HEAD}
-CIRRUS_CHANGE_IN_REPO=${CIRRUS_CHANGE_IN_REPO:-FETCH_HEAD}
-TIMESTAMPS_FILEPATH="${TIMESTAMPS_FILEPATH:-/var/tmp/timestamps}"
-SPECIALMODE="${SPECIALMODE:-none}"
-export CONTAINER_RUNTIME=${CONTAINER_RUNTIME:-podman}
 
-if ! [[ "$PATH" =~ "/usr/local/bin" ]]
-then
-    export PATH="$PATH:/usr/local/bin"
+# Downloaded, but not installed packages.
+PACKAGE_DOWNLOAD_DIR=/var/cache/download
+
+# Log remote-client system test server output here
+PODMAN_SERVER_LOG=$CIRRUS_WORKING_DIR/server.log
+
+# Defaults when not running under CI
+export CI="${CI:-false}"
+CIRRUS_CI="${CIRRUS_CI:-false}"
+DEST_BRANCH="${DEST_BRANCH:-master}"
+CONTINUOUS_INTEGRATION="${CONTINUOUS_INTEGRATION:-false}"
+CIRRUS_REPO_NAME=${CIRRUS_REPO_NAME:-podman}
+# Cirrus only sets $CIRRUS_BASE_SHA properly for PRs, but $EPOCH_TEST_COMMIT
+# needs to be set from this value in order for `make validate` to run properly.
+# When running get_ci_vm.sh, most $CIRRUS_xyz variables are empty. Attempt
+# to accomidate both branch and get_ci_vm.sh testing by discovering the base
+# branch SHA value.
+# shellcheck disable=SC2154
+if [[ -z "$CIRRUS_BASE_SHA" ]] && [[ -z "$CIRRUS_TAG" ]]
+then  # Operating on a branch, or under `get_ci_vm.sh`
+    CIRRUS_BASE_SHA=$(git rev-parse ${UPSTREAM_REMOTE:-origin}/$DEST_BRANCH)
+elif [[ -z "$CIRRUS_BASE_SHA" ]]
+then  # Operating on a tag
+    CIRRUS_BASE_SHA=$(git rev-parse HEAD)
 fi
+# The starting place for linting and code validation
+EPOCH_TEST_COMMIT="$CIRRUS_BASE_SHA"
 
-# In ci/testing environment, ensure variables are always loaded
-if [[ -r "$HOME/$ENVLIB" ]] && [[ -n "$CI" ]]
-then
-    # Make sure this is always loaded
-    source "$HOME/$ENVLIB"
-fi
+# Regex defining all CI-related env. vars. necessary for all possible
+# testing operations on all platforms and versions.  This is necessary
+# to avoid needlessly passing through global/system values across
+# contexts, such as host->container or root->rootless user
+PASSTHROUGH_ENV_RE='(^CI.*)|(^CIRRUS)|(^DISTRO_NV)|(^GOPATH)|(^GOCACHE)|(^GOSRC)|(^SCRIPT_BASE)|(CGROUP_MANAGER)|(OCI_RUNTIME)|(^TEST.*)|(^PODBIN_NAME)|(^PRIV_NAME)|(^ALT_NAME)|(^ROOTLESS_USER)|(SKIP_USERNS)|(.*_NAME)|(.*_FQIN)'
+# Unsafe env. vars for display
+SECRET_ENV_RE='(ACCOUNT)|(GC[EP]..+)|(SSH)|(PASSWORD)|(TOKEN)'
 
-# Pass in a line delimited list of, space delimited name/value pairs
-# exit non-zero with helpful error message if any value is empty
-req_env_var() {
-    echo "$1" | while read NAME VALUE
-    do
-        if [[ -n "$NAME" ]] && [[ -z "$VALUE" ]]
-        then
-            echo "Required env. var. \$$NAME is not set"
-            exit 9
-        fi
+# Type of filesystem used for cgroups
+CG_FS_TYPE="$(stat -f -c %T /sys/fs/cgroup)"
+
+# Set to 1 in all podman container images
+CONTAINER="${CONTAINER:-0}"
+
+# END Global export of all variables
+set +a
+
+lilto() { err_retry 8 1000 "" "$@"; }  # just over 4 minutes max
+bigto() { err_retry 7 5670 "" "$@"; }  # 12 minutes max
+
+# Print shell-escaped variable=value pairs, one per line, based on
+# variable name matching a regex.  This is intended to catch
+# variables being passed down from higher layers, like Cirrus-CI.
+passthrough_envars(){
+    local xchars
+    local envname
+    local envval
+    # Avoid values containing entirely punctuation|control|whitespace
+    xchars='[:punct:][:cntrl:][:space:]'
+    warn "Will pass env. vars. matching the following regex:
+    $PASSTHROUGH_ENV_RE"
+    for envname in $(awk 'BEGIN{for(v in ENVIRON) print v}' | \
+                         grep -Ev "SETUP_ENVIRONMENT" | \
+                         grep -Ev "$SECRET_ENV_RE" | \
+                         grep -E "$PASSTHROUGH_ENV_RE"); do
+
+            envval="${!envname}"
+            [[ -n $(tr -d "$xchars" <<<"$envval") ]] || continue
+
+            # Properly escape values to prevent injection
+            printf -- "$envname=%q\n" "$envval"
     done
-}
-
-# Some env. vars may contain secrets.  Display values for known "safe"
-# and useful variables.
-# ref: https://cirrus-ci.org/guide/writing-tasks/#environment-variables
-show_env_vars() {
-    # This is almost always multi-line, print it separately
-    echo "export CIRRUS_CHANGE_MESSAGE=$CIRRUS_CHANGE_MESSAGE"
-    echo "
-BUILDTAGS $BUILDTAGS
-BUILT_IMAGE_SUFFIX $BUILT_IMAGE_SUFFIX
-ROOTLESS_USER $ROOTLESS_USER
-CI $CI
-CIRRUS_CI $CIRRUS_CI
-CI_NODE_INDEX $CI_NODE_INDEX
-CI_NODE_TOTAL $CI_NODE_TOTAL
-CONTINUOUS_INTEGRATION $CONTINUOUS_INTEGRATION
-CIRRUS_BASE_BRANCH $CIRRUS_BASE_BRANCH
-CIRRUS_BASE_SHA $CIRRUS_BASE_SHA
-CIRRUS_BRANCH $CIRRUS_BRANCH
-CIRRUS_BUILD_ID $CIRRUS_BUILD_ID
-CIRRUS_CHANGE_IN_REPO $CIRRUS_CHANGE_IN_REPO
-CIRRUS_CLONE_DEPTH $CIRRUS_CLONE_DEPTH
-CIRRUS_DEFAULT_BRANCH $CIRRUS_DEFAULT_BRANCH
-CIRRUS_PR $CIRRUS_PR
-CIRRUS_TAG $CIRRUS_TAG
-CIRRUS_OS $CIRRUS_OS
-OS $OS
-CIRRUS_TASK_NAME $CIRRUS_TASK_NAME
-CIRRUS_TASK_ID $CIRRUS_TASK_ID
-CIRRUS_REPO_NAME $CIRRUS_REPO_NAME
-CIRRUS_REPO_OWNER $CIRRUS_REPO_OWNER
-CIRRUS_REPO_FULL_NAME $CIRRUS_REPO_FULL_NAME
-CIRRUS_REPO_CLONE_URL $CIRRUS_REPO_CLONE_URL
-CIRRUS_SHELL $CIRRUS_SHELL
-CIRRUS_USER_COLLABORATOR $CIRRUS_USER_COLLABORATOR
-CIRRUS_USER_PERMISSION $CIRRUS_USER_PERMISSION
-CIRRUS_WORKING_DIR $CIRRUS_WORKING_DIR
-CIRRUS_HTTP_CACHE_HOST $CIRRUS_HTTP_CACHE_HOST
-SPECIALMODE $SPECIALMODE
-$(go env)
-PACKER_BUILDS $PACKER_BUILDS
-    " | while read NAME VALUE
-    do
-        [[ -z "$NAME" ]] || echo "export $NAME=\"$VALUE\""
-    done
-    echo ""
-    echo "##### $(go version) #####"
-    echo ""
-}
-
-# Unset environment variables not needed for testing purposes
-clean_env() {
-    req_env_var "
-        UNSET_ENV_VARS $UNSET_ENV_VARS
-    "
-    echo "Unsetting $(echo $UNSET_ENV_VARS | wc -w) environment variables"
-    unset -v UNSET_ENV_VARS $UNSET_ENV_VARS || true  # don't fail on read-only
-}
-
-die() {
-    req_env_var "
-        1 $1
-        2 $2
-    "
-    echo "$2"
-    exit $1
-}
-
-# Return a GCE image-name compatible string representation of distribution name
-os_release_id() {
-    eval "$(egrep -m 1 '^ID=' /etc/os-release | tr -d \' | tr -d \")"
-    echo "$ID"
-}
-
-# Return a GCE image-name compatible string representation of distribution major version
-os_release_ver() {
-    eval "$(egrep -m 1 '^VERSION_ID=' /etc/os-release | tr -d \' | tr -d \")"
-    echo "$VERSION_ID" | cut -d '.' -f 1
-}
-
-bad_os_id_ver() {
-    echo "Unknown/Unsupported distro. $OS_RELEASE_ID and/or version $OS_RELEASE_VER for $ARGS"
-    exit 42
-}
-
-stub() {
-    echo "STUB: Pretending to do $1"
-}
-
-ircmsg() {
-    req_env_var "
-        CIRRUS_TASK_ID $CIRRUS_TASK_ID
-        @ $@
-    "
-    # Sometimes setup_environment.sh didn't run
-    SCRIPT="$(dirname $0)/podbot.py"
-    NICK="podbot_$CIRRUS_TASK_ID"
-    NICK="${NICK:0:15}"  # Any longer will break things
-    set +e
-    $SCRIPT $NICK $@
-    echo "Ignoring exit($?)"
-    set -e
-}
-
-record_timestamp() {
-    set +x  # sometimes it's turned on
-    req_env_var "TIMESTAMPS_FILEPATH $TIMESTAMPS_FILEPATH"
-    echo "."  # cirrus webui strips blank-lines
-    STAMPMSG="The $1 time at the tone will be:"
-    echo -e "$STAMPMSG\t$(date --iso-8601=seconds)" | \
-        tee -a $TIMESTAMPS_FILEPATH
-    echo -e "BLEEEEEEEEEEP!\n."
 }
 
 setup_rootless() {
-    req_env_var "
-        ROOTLESS_USER $ROOTLESS_USER
-        GOSRC $GOSRC
-        ENVLIB $ENVLIB
-    "
+    req_env_vars ROOTLESS_USER GOPATH GOSRC SECRET_ENV_RE
 
+    local rootless_uid
+    local rootless_gid
+    local env_var_val
+
+    # Only do this once; established by setup_environment.sh
+    # shellcheck disable=SC2154
     if passwd --status $ROOTLESS_USER
     then
-        echo "Updating $ROOTLESS_USER user permissions on possibly changed libpod code"
-        chown -R $ROOTLESS_USER:$ROOTLESS_USER "$GOSRC"
+        msg "Updating $ROOTLESS_USER user permissions on possibly changed libpod code"
+        chown -R $ROOTLESS_USER:$ROOTLESS_USER "$GOPATH" "$GOSRC"
         return 0
     fi
-
-    # Only do this once
-    cd $GOSRC
-    make install.catatonit
-    go get github.com/onsi/ginkgo/ginkgo
-    go get github.com/onsi/gomega/...
-    dnf -y update runc
-
+    msg "************************************************************"
+    msg "Setting up rootless user '$ROOTLESS_USER'"
+    msg "************************************************************"
+    cd $GOSRC || exit 1
     # Guarantee independence from specific values
-    ROOTLESS_UID=$[RANDOM+1000]
-    ROOTLESS_GID=$[RANDOM+1000]
-    echo "creating $ROOTLESS_UID:$ROOTLESS_GID $ROOTLESS_USER user"
-    groupadd -g $ROOTLESS_GID $ROOTLESS_USER
-    useradd -g $ROOTLESS_GID -u $ROOTLESS_UID --no-user-group --create-home $ROOTLESS_USER
-    chown -R $ROOTLESS_USER:$ROOTLESS_USER "$GOSRC"
+    rootless_uid=$[RANDOM+1000]
+    rootless_gid=$[RANDOM+1000]
+    msg "creating $rootless_uid:$rootless_gid $ROOTLESS_USER user"
+    groupadd -g $rootless_gid $ROOTLESS_USER
+    useradd -g $rootless_gid -u $rootless_uid --no-user-group --create-home $ROOTLESS_USER
+    chown -R $ROOTLESS_USER:$ROOTLESS_USER "$GOPATH" "$GOSRC"
 
-    echo "creating ssh keypair for $USER"
-    ssh-keygen -P "" -f $HOME/.ssh/id_rsa
+    msg "creating ssh key pair for $USER"
+    [[ -r "$HOME/.ssh/id_rsa" ]] || \
+        ssh-keygen -P "" -f "$HOME/.ssh/id_rsa"
 
-    echo "Allowing ssh key for $ROOTLESS_USER"
+    msg "Allowing ssh key for $ROOTLESS_USER"
     (umask 077 && mkdir "/home/$ROOTLESS_USER/.ssh")
     chown -R $ROOTLESS_USER:$ROOTLESS_USER "/home/$ROOTLESS_USER/.ssh"
     install -o $ROOTLESS_USER -g $ROOTLESS_USER -m 0600 \
@@ -199,247 +176,71 @@ setup_rootless() {
     # Makes debugging easier
     cat /root/.ssh/authorized_keys >> "/home/$ROOTLESS_USER/.ssh/authorized_keys"
 
-    echo "Configuring subuid and subgid"
+    msg "Configuring subuid and subgid"
     grep -q "${ROOTLESS_USER}" /etc/subuid || \
-        echo "${ROOTLESS_USER}:$[ROOTLESS_UID * 100]:65536" | \
+        echo "${ROOTLESS_USER}:$[rootless_uid * 100]:65536" | \
             tee -a /etc/subuid >> /etc/subgid
 
-    echo "Setting permissions on automation files"
-    chmod 666 "$TIMESTAMPS_FILEPATH"
+    msg "Ensure the ssh daemon is up and running within 5 minutes"
+    systemctl start sshd
+    lilto ssh $ROOTLESS_USER@localhost \
+           -o UserKnownHostsFile=/dev/null \
+           -o StrictHostKeyChecking=no \
+           -o CheckHostIP=no true
+}
 
-    echo "Copying $HOME/$ENVLIB"
-    install -o $ROOTLESS_USER -g $ROOTLESS_USER -m 0700 \
-        "$HOME/$ENVLIB" "/home/$ROOTLESS_USER/$ENVLIB"
+install_test_configs() {
+    echo "Installing cni config, policy and registry config"
+    req_env_vars GOSRC SCRIPT_BASE
+    cd $GOSRC || exit 1
+    install -v -D -m 644 ./cni/87-podman-bridge.conflist /etc/cni/net.d/
+    # This config must always sort last in the list of networks (podman picks first one
+    # as the default).  This config prevents allocation of network address space used
+    # by default in google cloud.  https://cloud.google.com/vpc/docs/vpc#ip-ranges
+    install -v -D -m 644 $SCRIPT_BASE/99-do-not-use-google-subnets.conflist /etc/cni/net.d/
 
-    echo "Configuring user's go environment variables"
-    su --login --command 'go env' $ROOTLESS_USER | \
-        while read envline
+    install -v -D -m 644 ./test/registries.conf /etc/containers/
+}
+
+# Remove all files provided by the distro version of podman.
+# All VM cache-images used for testing include the distro podman because (1) it's
+# required for podman-in-podman testing and (2) it somewhat simplifies the task
+# of pulling in necessary prerequisites packages as the set can change over time.
+# For general CI testing however, calling this function makes sure the system
+# can only run the compiled source version.
+remove_packaged_podman_files() {
+    echo "Removing packaged podman files to prevent conflicts with source build and testing."
+    req_env_vars OS_RELEASE_ID
+
+    # If any binaries are resident they could cause unexpected pollution
+    for unit in io.podman.service io.podman.socket
+    do
+        for state in enabled active
         do
-            X=$(echo "export $envline" | tee -a "/home/$ROOTLESS_USER/$ENVLIB") && echo "$X"
+            if systemctl --quiet is-$state $unit
+            then
+                echo "Warning: $unit found $state prior to packaged-file removal"
+                systemctl --quiet disable $unit || true
+                systemctl --quiet stop $unit || true
+            fi
         done
-}
+    done
 
-# Helper/wrapper script to only show stderr/stdout on non-zero exit
-install_ooe() {
-    req_env_var "SCRIPT_BASE $SCRIPT_BASE"
-    echo "Installing script to mask stdout/stderr unless non-zero exit."
-    sudo install -D -m 755 "/tmp/libpod/$SCRIPT_BASE/ooe.sh" /usr/local/bin/ooe.sh
-}
-
-# Grab a newer version of git from software collections
-# https://www.softwarecollections.org/en/
-# and use it with a wrapper
-install_scl_git() {
-    echo "Installing SoftwareCollections updated 'git' version."
-    ooe.sh sudo yum -y install rh-git29
-    cat << "EOF" | sudo tee /usr/bin/git
-#!/bin/bash
-
-scl enable rh-git29 -- git $@
-EOF
-    sudo chmod 755 /usr/bin/git
-}
-
-install_cni_plugins() {
-    echo "Installing CNI Plugins from commit $CNI_COMMIT"
-    req_env_var "
-        GOPATH $GOPATH
-        CNI_COMMIT $CNI_COMMIT
-    "
-    DEST="$GOPATH/src/github.com/containernetworking/plugins"
-    rm -rf "$DEST"
-    ooe.sh git clone "https://github.com/containernetworking/plugins.git" "$DEST"
-    cd "$DEST"
-    ooe.sh git checkout -q "$CNI_COMMIT"
-    ooe.sh ./build.sh
-    sudo mkdir -p /usr/libexec/cni
-    sudo cp bin/* /usr/libexec/cni
-}
-
-install_runc_from_git(){
-    wd=$(pwd)
-    DEST="$GOPATH/src/github.com/opencontainers/runc"
-    rm -rf "$DEST"
-    ooe.sh git clone https://github.com/opencontainers/runc.git "$DEST"
-    cd "$DEST"
-    ooe.sh git fetch origin --tags
-    ooe.sh git checkout -q "$RUNC_COMMIT"
-    ooe.sh make static BUILDTAGS="seccomp apparmor selinux"
-    sudo install -m 755 runc /usr/bin/runc
-    cd $wd
-}
-
-install_runc(){
-    OS_RELEASE_ID=$(os_release_id)
-    echo "Installing RunC from commit $RUNC_COMMIT"
-    echo "Platform is $OS_RELEASE_ID"
-    req_env_var "
-        GOPATH $GOPATH
-        RUNC_COMMIT $RUNC_COMMIT
-        OS_RELEASE_ID $OS_RELEASE_ID
-    "
-    if [[ "$OS_RELEASE_ID" =~ "ubuntu" ]]; then
-        echo "Running make install.libseccomp.sudo for ubuntu"
-        if ! [[ -d "/tmp/libpod" ]]
-        then
-            echo "Expecting a copy of libpod repository in /tmp/libpod"
-            exit 5
-        fi
-        mkdir -p "$GOPATH/src/github.com/containers/"
-        # Symlinks don't work with Go
-        cp -a /tmp/libpod "$GOPATH/src/github.com/containers/"
-        cd "$GOPATH/src/github.com/containers/libpod"
-        ooe.sh sudo make install.libseccomp.sudo
-    fi
-    install_runc_from_git
-}
-
-install_buildah() {
-    echo "Installing buildah from latest upstream master"
-    req_env_var "GOPATH $GOPATH"
-    DEST="$GOPATH/src/github.com/containers/buildah"
-    rm -rf "$DEST"
-    ooe.sh git clone https://github.com/containers/buildah "$DEST"
-    cd "$DEST"
-    ooe.sh make
-    ooe.sh sudo make install
-}
-
-# Requires $GOPATH and $CRIO_COMMIT to be set
-install_conmon(){
-    echo "Installing conmon from commit $CRIO_COMMIT"
-    req_env_var "
-        GOPATH $GOPATH
-        CRIO_COMMIT $CRIO_COMMIT
-    "
-    DEST="$GOPATH/src/github.com/kubernetes-sigs/cri-o.git"
-    rm -rf "$DEST"
-    ooe.sh git clone https://github.com/kubernetes-sigs/cri-o.git "$DEST"
-    cd "$DEST"
-    ooe.sh git fetch origin --tags
-    ooe.sh git checkout -q "$CRIO_COMMIT"
-    ooe.sh make
-    sudo install -D -m 755 bin/conmon /usr/libexec/podman/conmon
-}
-
-install_criu(){
-    OS_RELEASE_ID=$(os_release_id)
-    OS_RELEASE_VER=$(os_release_ver)
-    echo "Installing CRIU"
-    echo "Installing CRIU from commit $CRIU_COMMIT"
-    echo "Platform is $OS_RELEASE_ID"
-    req_env_var "
-    CRIU_COMMIT $CRIU_COMMIT
-    "
-
-    if [[ "$OS_RELEASE_ID" =~ "ubuntu" ]]; then
-        ooe.sh sudo -E add-apt-repository -y ppa:criu/ppa
-        ooe.sh sudo -E apt-get -qq -y update
-        ooe.sh sudo -E apt-get -qq -y install criu
-    elif [[ ( "$OS_RELEASE_ID" =~ "centos" || "$OS_RELEASE_ID" =~ "rhel" ) && "$OS_RELEASE_VER" =~ "7"* ]]; then
-        echo "Configuring Repositories for latest CRIU"
-        ooe.sh sudo tee /etc/yum.repos.d/adrian-criu-el7.repo <<EOF
-[adrian-criu-el7]
-name=Copr repo for criu-el7 owned by adrian
-baseurl=https://copr-be.cloud.fedoraproject.org/results/adrian/criu-el7/epel-7-$basearch/
-type=rpm-md
-skip_if_unavailable=True
-gpgcheck=1
-gpgkey=https://copr-be.cloud.fedoraproject.org/results/adrian/criu-el7/pubkey.gpg
-repo_gpgcheck=0
-enabled=1
-enabled_metadata=1
-EOF
-        ooe.sh sudo yum -y install criu
-    elif [[ "$OS_RELEASE_ID" =~ "fedora" ]]; then
-        echo "Using CRIU from distribution"
-    else
-        DEST="/tmp/criu"
-        rm -rf "$DEST"
-        ooe.sh git clone https://github.com/checkpoint-restore/criu.git "$DEST"
-        cd $DEST
-        ooe.sh git fetch origin --tags
-        ooe.sh git checkout -q "$CRIU_COMMIT"
-        ooe.sh make
-        sudo install -D -m 755  criu/criu /usr/sbin/
-    fi
-}
-
-install_packer_copied_files(){
-    # Install cni config, policy and registry config
-    sudo install -D -m 755 /tmp/libpod/cni/87-podman-bridge.conflist \
-                           /etc/cni/net.d/87-podman-bridge.conflist
-    sudo install -D -m 755 /tmp/libpod/test/policy.json \
-                           /etc/containers/policy.json
-    sudo install -D -m 755 /tmp/libpod/test/redhat_sigstore.yaml \
-                           /etc/containers/registries.d/registry.access.redhat.com.yaml
-}
-
-install_varlink() {
-    echo "Installing varlink from the cheese-factory"
-    ooe.sh sudo -H pip3 install varlink
-}
-
-_finalize(){
-    set +e  # Don't fail at the very end
-    set +e  # make errors non-fatal
-    echo "Removing leftover giblets from cloud-init"
-    cd /
-    sudo rm -rf /var/lib/cloud/instance?
-    sudo rm -rf /root/.ssh/*
-    sudo rm -rf /home/*
-    sudo rm -rf /tmp/*
-    sudo rm -rf /tmp/.??*
-    sync
-    sudo fstrim -av
-}
-
-rh_finalize(){
-    set +e  # Don't fail at the very end
-    # Allow root ssh-logins
-    if [[ -r /etc/cloud/cloud.cfg ]]
+    if [[ "$OS_RELEASE_ID" =~ "ubuntu" ]]
     then
-        sudo sed -re 's/^disable_root:.*/disable_root: 0/g' -i /etc/cloud/cloud.cfg
+        LISTING_CMD="dpkg-query -L podman"
+    else
+        LISTING_CMD="rpm -ql podman"
     fi
-    echo "Resetting to fresh-state for usage as cloud-image."
-    PKG=$(type -P dnf || type -P yum || echo "")
-    [[ -z "$PKG" ]] || sudo $PKG clean all  # not on atomic
-    sudo rm -rf /var/cache/{yum,dnf}
-    sudo rm -f /etc/udev/rules.d/*-persistent-*.rules
-    sudo touch /.unconfigured  # force firstboot to run
-    _finalize
-}
 
-ubuntu_finalize(){
-    set +e  # Don't fail at the very end
-    echo "Resetting to fresh-state for usage as cloud-image."
-    sudo rm -rf /var/cache/apt
-    _finalize
-}
+    # yum/dnf/dpkg may list system directories, only remove files
+    $LISTING_CMD | while read fullpath
+    do
+        # Sub-directories may contain unrelated/valuable stuff
+        if [[ -d "$fullpath" ]]; then continue; fi
+        ooe.sh rm -vf "$fullpath"
+    done
 
-rhel_exit_handler() {
-    set +ex
-    req_env_var "
-        GOPATH $GOPATH
-        RHSMCMD $RHSMCMD
-    "
-    cd /
-    sudo rm -rf "$RHSMCMD"
-    sudo rm -rf "$GOPATH"
-    sudo subscription-manager remove --all
-    sudo subscription-manager unregister
-    sudo subscription-manager clean
-}
-
-rhsm_enable() {
-    req_env_var "
-        RHSM_COMMAND $RHSM_COMMAND
-    "
-    export GOPATH="$(mktemp -d)"
-    export RHSMCMD="$(mktemp)"
-    trap "rhel_exit_handler" EXIT
-    # Avoid logging sensitive details
-    echo "$RHSM_COMMAND" > "$RHSMCMD"
-    ooe.sh sudo bash "$RHSMCMD"
-    sudo rm -rf "$RHSMCMD"
+    # Be super extra sure and careful vs performant and completely safe
+    sync && echo 3 > /proc/sys/vm/drop_caches || true
 }
