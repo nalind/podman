@@ -14,10 +14,10 @@ require (
 	github.com/containers/buildah v1.21.1-0.20210628174543-eadb10a12336
 	github.com/containers/common v0.40.2-0.20210624120009-b1d3c4dc2515
 	github.com/containers/conmon v2.0.20+incompatible
-	github.com/containers/image/v5 v5.13.2
+	github.com/containers/image/v5 v5.14.0
 	github.com/containers/ocicrypt v1.1.2
 	github.com/containers/psgo v1.5.2
-	github.com/containers/storage v1.32.5
+	github.com/containers/storage v1.32.6
 	github.com/coreos/go-systemd/v22 v22.3.2
 	github.com/coreos/stream-metadata-go v0.0.0-20210225230131-70edb9eb47b3
 	github.com/cri-o/ocicni v0.2.1-0.20210621164014-d0acc7862283
@@ -64,7 +64,7 @@ require (
 	go.etcd.io/bbolt v1.3.6
 	golang.org/x/crypto v0.0.0-20210322153248-0c34fe9e7dc2
 	golang.org/x/sync v0.0.0-20201207232520-09787c993a3a
-	golang.org/x/sys v0.0.0-20210603125802-9665404d3644
+	golang.org/x/sys v0.0.0-20210616094352-59db8d763f22
 	gopkg.in/yaml.v3 v3.0.0-20200615113413-eeeca48fe776
 	k8s.io/api v0.21.2
 	k8s.io/apimachinery v0.21.2
