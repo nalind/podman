@@ -164,7 +164,7 @@ Note: **N/A** means that the option cannot be supported in a single-node Podman 
 
 | Field                                   | Support                                               |
 |-----------------------------------------|-------------------------------------------------------|
-| replicas                                | ✅ (the actual replica count is ignored and set to 1) |
+| replicas                                | ✅ (use `--multiple-pods` option for replicas > 1)    |
 | selector                                | ✅                                                    |
 | template                                | ✅                                                    |
 | minReadySeconds                         | no                                                    |
