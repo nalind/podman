@@ -84,6 +84,9 @@ func applyHealthCheckOverrides(s *specgen.SpecGenerator, healthCheckFromImage *m
 		if overrideHealthCheckConfig.StartPeriod != 0 {
 			s.HealthConfig.StartPeriod = overrideHealthCheckConfig.StartPeriod
 		}
+		if overrideHealthCheckConfig.StartInterval != 0 {
+			s.HealthConfig.StartInterval = overrideHealthCheckConfig.StartInterval
+		}
 	}
 
 	disableInterval := false
