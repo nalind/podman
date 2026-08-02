@@ -227,10 +227,14 @@ READY=1" "Container log after ready signal"
     mainPID="$output"
 
     # Container does not send READY=1 until it runs a successful health check.
-    # Until then, there must be exactly one line in the log
-    wait_for_file_content $_SOCAT_LOG "MAINPID="
-    # ...and that line must contain the expected PID, nothing more
-    assert "$(< $_SOCAT_LOG)" = "MAINPID=$mainPID" "Container logs after start, prior to healthcheck run"
+    # Until then, the log must contain the MAINPID line followed by one or
+    # more EXTEND_TIMEOUT_USEC messages sent while waiting for the container
+    # to turn healthy (see #27290) -- but no READY.
+    wait_for_file_content $_SOCAT_LOG "EXTEND_TIMEOUT_USEC="
+    assert "$(head -n1 $_SOCAT_LOG)" = "MAINPID=$mainPID" \
+           "Container logs after start, prior to healthcheck run"
+    assert "$(< $_SOCAT_LOG)" !~ "READY=1" \
+           "READY must not be sent before the container turns healthy"
 
     # Now run the healthcheck and look for the READY message.
     run_podman healthcheck run $ctr
@@ -239,8 +243,7 @@ READY=1" "Container log after ready signal"
     # Wait for start to return.  At that point the READY message must have been
     # sent.
     wait_for_file_content $_SOCAT_LOG "READY=1"
-    assert "$(< $_SOCAT_LOG)" = "MAINPID=$mainPID
-READY=1" "Container log after healthcheck run"
+    assert "$(tail -n1 $_SOCAT_LOG)" = "READY=1" "Container log after healthcheck run"
 
     run_podman container inspect  --format "{{.State.Status}}" $ctr
     is "$output" "running" "make sure container is still running"
@@ -263,6 +266,48 @@ READY=1" "Container log after healthcheck run"
     #         $IMAGE sh -c 'while test \! -e /terminate; do sleep 0.1; done; echo finished; exit 12'
     # is "$output" "finished" "make sure container exited"
     # run_podman rm -f -t0 $ctr
+
+    _stop_socat
+}
+
+# https://github.com/containers/podman/issues/27290
+# bats test_tags=ci:parallel
+@test "sdnotify : healthy - periodic EXTEND_TIMEOUT_USEC until healthy" {
+    export NOTIFY_SOCKET=$PODMAN_TMPDIR/container.sock
+    _start_socat
+
+    # While waiting for the container to turn healthy, podman must send
+    # EXTEND_TIMEOUT_USEC messages periodically (every 10s) so that a
+    # time-to-healthy larger than the unit's TimeoutStartSec does not make
+    # systemd kill the service. The container turns healthy after ~15s,
+    # long enough for at least one periodic re-send after the initial one.
+    ctr=c-$(safename)
+    run_podman run -d --name $ctr    \
+            --health-cmd "test -f /ready" \
+            --health-interval 2s     \
+            --health-retries 1       \
+            --health-start-period 2m \
+            --sdnotify=healthy       \
+            $IMAGE sh -c "sleep 15; touch /ready; sleep infinity"
+
+    # podman run -d blocks until the container turns healthy, so READY has
+    # been sent by now.  Note the log may contain unrelated messages such as
+    # EXIT_STATUS=0 from the systemd-run creating the healthcheck timer, so
+    # only look for the messages podman itself must have sent.
+    wait_for_file_content $_SOCAT_LOG "READY=1"
+
+    assert "$(< $_SOCAT_LOG)" =~ "MAINPID=" \
+           "MAINPID must be sent on the notify socket"
+
+    # Initial extension plus at least one periodic re-send.
+    extend_count=$(grep -c "EXTEND_TIMEOUT_USEC=30000000" $_SOCAT_LOG)
+    assert "$extend_count" -ge 2 \
+           "expected at least two EXTEND_TIMEOUT_USEC messages, log: $(< $_SOCAT_LOG)"
+
+    run_podman container inspect --format "{{.State.Health.Status}}" $ctr
+    is "$output" "healthy" "container turned healthy"
+
+    run_podman rm -f -t0 $ctr
 
     _stop_socat
 }
