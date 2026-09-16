@@ -23,12 +23,6 @@ If none is specified, the original container's cpu period is used
 
 If none is specified, the original container's CPU quota are used.
 
-@@option cpu-rt-period
-
-If none is specified, the original container's CPU runtime period is used.
-
-@@option cpu-rt-runtime
-
 @@option cpu-shares
 
 If none are specified, the original container's CPU shares are used.

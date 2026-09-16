@@ -22,10 +22,6 @@ Updates the configuration of an existing container, allowing changes to resource
 
 @@option cpu-quota
 
-@@option cpu-rt-period
-
-@@option cpu-rt-runtime
-
 @@option cpu-shares
 
 @@option cpus.container

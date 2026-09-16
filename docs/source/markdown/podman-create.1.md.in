@@ -106,10 +106,6 @@ and specified with a _tag_.
 
 @@option cpu-quota
 
-@@option cpu-rt-period
-
-@@option cpu-rt-runtime
-
 @@option cpu-shares
 
 @@option cpus.container
