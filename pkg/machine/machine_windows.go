@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -102,6 +103,58 @@ func DialNamedPipe(ctx context.Context, path string) (net.Conn, error) {
 	return winio.DialPipeContext(ctx, path)
 }
 
+func cleanupStaleProxy(pipeName string, recordedPID uint32, cleanup func() error) error {
+	if err := cleanup(); err != nil {
+		return fmt.Errorf("cleaning up stale proxy process %d: %w", recordedPID, err)
+	}
+	if !PipeNameAvailable(pipeName, MachineNameWait) {
+		return fmt.Errorf("named pipe %q is still in use after cleaning up stale proxy process %d", pipeName, recordedPID)
+	}
+	return nil
+}
+
+// CleanupStaleGVProxy stops a gvproxy process left behind by an externally
+// stopped VM when its named pipe and PID file still exist.
+func CleanupStaleGVProxy(pipeName string, pidFile define.VMFile) error {
+	if PipeNameAvailable(pipeName, 0) {
+		return nil
+	}
+
+	pid, err := pidFile.ReadPIDFrom()
+	if err != nil {
+		return fmt.Errorf("reading gvproxy PID file while named pipe %q is in use: %w", pipeName, err)
+	}
+	// Accept proxy PIDs from 1 through 2^32-1 (4,294,967,295) to avoid truncation or invalidation during conversion.
+	if pid <= 0 || uint64(pid) > uint64(math.MaxUint32) {
+		return fmt.Errorf("invalid gvproxy PID %d while named pipe %q is in use", pid, pipeName)
+	}
+
+	return cleanupStaleProxy(pipeName, uint32(pid), func() error {
+		return cleanupGVProxy(pid, pidFile)
+	})
+}
+
+// CleanupStaleWinProxy stops a win-sshproxy process left behind by an
+// externally stopped WSL VM when its named pipe and PID/TID file still exist.
+func CleanupStaleWinProxy(name string, vmtype define.VMType) error {
+	pipeName := env.WithPodmanPrefix(name)
+	if PipeNameAvailable(pipeName, 0) {
+		return nil
+	}
+
+	pid, tid, tidFile, err := readWinProxyTid(name, vmtype)
+	if err != nil {
+		return fmt.Errorf("reading win-sshproxy state while named pipe %q is in use: %w", pipeName, err)
+	}
+	if pid == 0 || tid == 0 {
+		return fmt.Errorf("invalid win-sshproxy state %d:%d while named pipe %q is in use", pid, tid, pipeName)
+	}
+
+	return cleanupStaleProxy(pipeName, pid, func() error {
+		return stopWinProxy(pid, tid, tidFile)
+	})
+}
+
 func LaunchWinProxy(opts WinProxyOpts, noInfo bool) {
 	globalName, pipeName, err := launchWinProxy(opts)
 	if !noInfo {
@@ -194,7 +247,10 @@ func StopWinProxy(name string, vmtype define.VMType) error {
 	if err != nil {
 		return err
 	}
+	return stopWinProxy(pid, tid, tidFile)
+}
 
+func stopWinProxy(pid, tid uint32, tidFile string) error {
 	proc, err := os.FindProcess(int(pid))
 	if err != nil {
 		//nolint:nilerr
