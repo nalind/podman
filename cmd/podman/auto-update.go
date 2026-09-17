@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"go.podman.io/common/pkg/auth"
@@ -18,6 +19,7 @@ import (
 
 type cliAutoUpdateOptions struct {
 	entities.AutoUpdateOptions
+	filters   []string
 	format    string
 	tlsVerify bool
 }
@@ -52,6 +54,9 @@ func init() {
 	flags.StringVar(&autoUpdateOptions.Authfile, authfileFlagName, auth.GetDefaultAuthFile(), "Path to the authentication file. Use REGISTRY_AUTH_FILE environment variable to override")
 	_ = autoUpdateCommand.RegisterFlagCompletionFunc(authfileFlagName, completion.AutocompleteDefault)
 
+	flags.StringArrayVarP(&autoUpdateOptions.filters, "filter", "f", nil, "Filter containers based on conditions given")
+	_ = autoUpdateCommand.RegisterFlagCompletionFunc("filter", common.AutocompletePsFilters)
+
 	flags.BoolVar(&autoUpdateOptions.DryRun, "dry-run", false, "Check for pending updates")
 	flags.BoolVar(&autoUpdateOptions.Rollback, "rollback", true, "Rollback to previous image if update fails")
 
@@ -74,6 +79,15 @@ func autoUpdate(cmd *cobra.Command, args []string) error {
 	}
 	if cmd.Flags().Changed("tls-verify") {
 		autoUpdateOptions.InsecureSkipTLSVerify = types.NewOptionalBool(!autoUpdateOptions.tlsVerify)
+	}
+
+	autoUpdateOptions.Filters = make(map[string][]string)
+	for _, filter := range autoUpdateOptions.filters {
+		key, value, ok := strings.Cut(filter, "=")
+		if !ok {
+			return fmt.Errorf("invalid filter %q", filter)
+		}
+		autoUpdateOptions.Filters[key] = append(autoUpdateOptions.Filters[key], value)
 	}
 
 	allReports, failures := registry.ContainerEngine().AutoUpdate(registry.Context(), autoUpdateOptions.AutoUpdateOptions)
