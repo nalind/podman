@@ -77,13 +77,13 @@ var _ = Describe("Podman run cpu", func() {
 		result := podmanTest.Podman([]string{"run", "--rm", "--cpu-rt-period=5000", ALPINE, "ls"})
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(Exit(0))
-		Expect(result.ErrorToString()).To(ContainSubstring("Realtime period not supported on cgroups V2 systems"))
+		Expect(result.ErrorToString()).To(ContainSubstring("Realtime period is not supported as it requires cgroups v1, the value is ignored (NOP) and the option will be removed in the next major release"))
 	})
 
 	It("podman run invalid cpu-rt-runtime with cgroupsv2", func() {
 		result := podmanTest.Podman([]string{"run", "--rm", "--cpu-rt-runtime=5000", ALPINE, "ls"})
 		result.WaitWithDefaultTimeout()
 		Expect(result).Should(Exit(0))
-		Expect(result.ErrorToString()).To(ContainSubstring("Realtime runtime not supported on cgroups V2 systems"))
+		Expect(result.ErrorToString()).To(ContainSubstring("Realtime runtime is not supported as it requires cgroups v1, the value is ignored (NOP) and the option will be removed in the next major release"))
 	})
 })
