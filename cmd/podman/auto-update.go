@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"go.podman.io/common/pkg/auth"
@@ -12,6 +11,7 @@ import (
 	"go.podman.io/common/pkg/report"
 	"go.podman.io/image/v5/types"
 	"go.podman.io/podman/v6/cmd/podman/common"
+	"go.podman.io/podman/v6/cmd/podman/parse"
 	"go.podman.io/podman/v6/cmd/podman/registry"
 	"go.podman.io/podman/v6/pkg/domain/entities"
 	"go.podman.io/podman/v6/pkg/errorhandling"
@@ -81,13 +81,10 @@ func autoUpdate(cmd *cobra.Command, args []string) error {
 		autoUpdateOptions.InsecureSkipTLSVerify = types.NewOptionalBool(!autoUpdateOptions.tlsVerify)
 	}
 
-	autoUpdateOptions.Filters = make(map[string][]string)
-	for _, filter := range autoUpdateOptions.filters {
-		key, value, ok := strings.Cut(filter, "=")
-		if !ok {
-			return fmt.Errorf("invalid filter %q", filter)
-		}
-		autoUpdateOptions.Filters[key] = append(autoUpdateOptions.Filters[key], value)
+	var err error
+	autoUpdateOptions.Filters, err = parse.FilterArgumentsIntoFilters(autoUpdateOptions.filters)
+	if err != nil {
+		return err
 	}
 
 	allReports, failures := registry.ContainerEngine().AutoUpdate(registry.Context(), autoUpdateOptions.AutoUpdateOptions)

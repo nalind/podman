@@ -332,7 +332,7 @@ function _confirm_update() {
     assert "$output" = "$(printf '%s\n' "$old_image" "$old_image")" "A no-match update leaves both images unchanged"
 
     run_podman 125 auto-update --filter invalid
-    assert "$output" = 'Error: invalid filter "invalid"' "Reject malformed filters"
+    assert "$output" = 'Error: filter input must be in the form of filter=value: invalid is invalid' "Reject malformed filters"
     run_podman 125 auto-update --filter invalid=value
     assert "$output" = 'Error: invalid is an invalid filter' "Reject unknown filters"
 
