@@ -23,6 +23,96 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// leaseRangeToDockerIPRange maps a Libpod LeaseRange back to the Docker IPAM
+// IPRange it was derived from, or the zero Prefix when the range is not exactly
+// the usable span of a CIDR.
+//
+// CreateNetwork builds the lease range with FirstIPInSubnet/LastIPInSubnet, so
+// StartIP is the network address plus one and EndIP is the broadcast address.
+// XORing the network address with EndIP yields the host mask, which identifies
+// the prefix length in a single step; requiring that mask to be a run of
+// trailing ones, and the network address to be aligned to it, is what rejects
+// partial ranges such as 10.0.0.5-10.0.0.99.
+func leaseRangeToDockerIPRange(lr *nettypes.LeaseRange) netip.Prefix {
+	if lr == nil || lr.StartIP == nil || lr.EndIP == nil {
+		return netip.Prefix{}
+	}
+
+	start, ok := netip.AddrFromSlice(lr.StartIP)
+	if !ok {
+		return netip.Prefix{}
+	}
+	end, ok := netip.AddrFromSlice(lr.EndIP)
+	if !ok {
+		return netip.Prefix{}
+	}
+
+	// Collapse 4-in-6 so both addresses agree on a family and bit length.
+	start = start.Unmap()
+	end = end.Unmap()
+	if start.BitLen() != end.BitLen() || end.Less(start) {
+		return netip.Prefix{}
+	}
+
+	// A single-address range is a host route; there is no network address below it.
+	if start == end {
+		return netip.PrefixFrom(start, start.BitLen())
+	}
+
+	network := start.Prev()
+	if !network.IsValid() {
+		// start was the all-zero address, so no network address precedes it.
+		return netip.Prefix{}
+	}
+
+	hostBits, ok := hostBitsBetween(network, end)
+	if !ok {
+		return netip.Prefix{}
+	}
+
+	// Masked clears the host bits, so a network address that does not survive it
+	// was never aligned to the prefix and the range is not a whole CIDR.
+	pfx := netip.PrefixFrom(network, network.BitLen()-hostBits)
+	if pfx.Masked().Addr() != network {
+		return netip.Prefix{}
+	}
+	return pfx
+}
+
+// hostBitsBetween counts the host bits implied by the mask network^end, and
+// reports whether that mask is a contiguous run of trailing ones, i.e. of the
+// form 0...01...1. Anything else means the range does not line up with a CIDR
+// boundary. Both addresses are compared in their 16-byte form, which is safe
+// because the caller has already established that they share a family.
+func hostBitsBetween(network, end netip.Addr) (int, bool) {
+	n, e := network.As16(), end.As16()
+
+	hostBits := 0
+	i := 15
+	for i >= 0 && n[i]^e[i] == 0xff {
+		hostBits += 8
+		i--
+	}
+	if i >= 0 {
+		h := n[i] ^ e[i]
+		if h&(h+1) != 0 {
+			return 0, false
+		}
+		for h != 0 {
+			hostBits++
+			h >>= 1
+		}
+		// Every byte above the mask must match, or the two ends sit in
+		// different networks.
+		for i--; i >= 0; i-- {
+			if n[i] != e[i] {
+				return 0, false
+			}
+		}
+	}
+	return hostBits, true
+}
+
 func normalizeNetworkName(rt *libpod.Runtime, name string) (string, bool) {
 	if name == nettypes.BridgeNetworkDriver {
 		return rt.Network().DefaultNetworkName(), true
@@ -121,7 +211,7 @@ func convertLibpodNetworktoDockerNetwork(runtime *libpod.Runtime, statuses []abi
 		ipamConfig := dockerNetwork.IPAMConfig{
 			Subnet:  subnet,
 			Gateway: gateway,
-			// TODO add range
+			IPRange: leaseRangeToDockerIPRange(sub.LeaseRange),
 		}
 		ipamConfigs = append(ipamConfigs, ipamConfig)
 	}
