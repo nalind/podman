@@ -974,6 +974,24 @@ t POST containers/$cid/update \
 
 t DELETE containers/$cid 204
 
+# 29790: compat update must not reset the restart policy when the body omits it
+t POST containers/create \
+  Image=$IMAGE           \
+  HostConfig='{"RestartPolicy":{"Name":"unless-stopped"}}' \
+  201                    \
+  .Id~[0-9a-f]\\{64\\}
+cid=$(jq -r '.Id' <<<"$output")
+
+t POST containers/$cid/update Memory=67108864 200
+t GET containers/$cid/json 200 \
+  .HostConfig.RestartPolicy.Name=unless-stopped
+
+t POST containers/$cid/update RestartPolicy='{"Name":"always"}' 200
+t GET containers/$cid/json 200 \
+  .HostConfig.RestartPolicy.Name=always
+
+t DELETE containers/$cid 204
+
 # Libpod API
 t POST libpod/containers/create \
   Image=$IMAGE           \
