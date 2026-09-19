@@ -875,14 +875,16 @@ func UpdateContainer(w http.ResponseWriter, r *http.Request) {
 		resources.BlockIO.Weight = &options.BlkioWeight
 	}
 
-	// Restart policy
-	localPolicy := string(options.RestartPolicy.Name)
-	restartPolicy := &localPolicy
-
+	// Restart policy, only changed when the request sets one (matches Docker)
+	var restartPolicy *string
 	var restartRetries *uint
-	if options.RestartPolicy.MaximumRetryCount != 0 {
-		localRetries := uint(options.RestartPolicy.MaximumRetryCount)
-		restartRetries = &localRetries
+	if options.RestartPolicy.Name != "" {
+		localPolicy := string(options.RestartPolicy.Name)
+		restartPolicy = &localPolicy
+		if options.RestartPolicy.MaximumRetryCount != 0 {
+			localRetries := uint(options.RestartPolicy.MaximumRetryCount)
+			restartRetries = &localRetries
+		}
 	}
 
 	// Rlimits
