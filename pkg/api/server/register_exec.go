@@ -273,7 +273,8 @@ func (s *APIServer) registerExecHandlers(r *mux.Router) error {
 	//      properties:
 	//        Detach:
 	//          type: boolean
-	//          description: Detach from the command.
+	//          description: |
+	//           "Detach from the command. Detach defaults to true if no attach streams were specified when the session was created (IE AttachStdin, AttachStdout, AttachStderr are all false)."
 	//        Tty:
 	//          type: boolean
 	//          description: Allocate a pseudo-TTY.
