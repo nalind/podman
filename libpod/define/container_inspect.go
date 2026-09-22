@@ -539,7 +539,6 @@ type InspectContainerHostConfig struct {
 	// ConsoleSize is an array of 2 integers showing the size of the
 	// container's console.
 	// It is only set if the container is creating a terminal.
-	// TODO.
 	ConsoleSize []uint `json:"ConsoleSize"`
 	// Isolation is presently unused and provided solely for Docker
 	// compatibility.
