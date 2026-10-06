@@ -4,6 +4,7 @@ package libpod
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -434,7 +435,7 @@ func (s *BoltState) UpdateVolume(volume *Volume) error {
 }
 
 // AllVolumes returns all volumes present in the state
-func (s *BoltState) AllVolumes() ([]*Volume, error) {
+func (s *BoltState) AllVolumes(ctx context.Context) ([]*Volume, error) {
 	if !s.valid {
 		return nil, define.ErrDBClosed
 	}
@@ -469,7 +470,7 @@ func (s *BoltState) AllVolumes() ([]*Volume, error) {
 			volume.config = new(VolumeConfig)
 			volume.state = new(VolumeState)
 
-			if err := s.getVolumeFromDB(id, volume, volBucket); err != nil {
+			if err := s.getVolumeFromDB(ctx, id, volume, volBucket); err != nil {
 				if !errors.Is(err, define.ErrNSMismatch) {
 					logrus.Errorf("Retrieving volume %s from the database: %v", string(id), err)
 				}

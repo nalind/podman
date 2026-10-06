@@ -59,7 +59,7 @@ func (ir *ImageEngine) Exists(_ context.Context, nameOrID string) (*entities.Boo
 func (ir *ImageEngine) Prune(ctx context.Context, opts entities.ImagePruneOptions) ([]*reports.PruneReport, error) {
 	pruneOptions := &libimage.RemoveImagesOptions{
 		RemoveContainerFunc:     ir.Libpod.RemoveContainersForImageCallback(ctx, true),
-		IsExternalContainerFunc: ir.Libpod.IsExternalContainerCallback(ctx),
+		IsExternalContainerFunc: ir.Libpod.IsExternalContainerCallback(),
 		ExternalContainers:      opts.External,
 		Filters:                 append(opts.Filter, "readonly=false"),
 		WithSize:                true,
@@ -695,9 +695,9 @@ func (ir *ImageEngine) Remove(ctx context.Context, images []string, opts entitie
 }
 
 // Shutdown Libpod engine
-func (ir *ImageEngine) Shutdown(_ context.Context) {
+func (ir *ImageEngine) Shutdown(ctx context.Context) {
 	shutdownSync.Do(func() {
-		_ = ir.Libpod.Shutdown(false)
+		_ = ir.Libpod.Shutdown(ctx, false)
 	})
 }
 

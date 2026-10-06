@@ -64,8 +64,8 @@ type bindingTest struct {
 	conn            context.Context
 }
 
-func (b *bindingTest) NewConnection() error {
-	connText, err := NewConnection(context.Background(), b.sock)
+func (b *bindingTest) NewConnection(ctx context.Context) error {
+	connText, err := NewConnection(ctx, b.sock)
 	if err != nil {
 		return err
 	}

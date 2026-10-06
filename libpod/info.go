@@ -5,6 +5,7 @@ package libpod
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -27,7 +28,7 @@ import (
 )
 
 // Info returns the store and host information
-func (r *Runtime) info() (*define.Info, error) {
+func (r *Runtime) info(ctx context.Context) (*define.Info, error) {
 	info := define.Info{}
 	versionInfo, err := define.GetVersion()
 	if err != nil {
@@ -35,7 +36,7 @@ func (r *Runtime) info() (*define.Info, error) {
 	}
 	info.Version = versionInfo
 	// get host information
-	hostInfo, err := r.hostInfo()
+	hostInfo, err := r.hostInfo(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("getting host info: %w", err)
 	}
@@ -79,7 +80,7 @@ func (r *Runtime) info() (*define.Info, error) {
 }
 
 // top-level "host" info
-func (r *Runtime) hostInfo() (*define.HostInfo, error) {
+func (r *Runtime) hostInfo(ctx context.Context) (*define.HostInfo, error) {
 	// let's say OS, arch, number of cpus, amount of memory, maybe os distribution/version, hostname, kernel version, uptime
 	mi, err := system.ReadMemInfo()
 	if err != nil {
@@ -111,7 +112,7 @@ func (r *Runtime) hostInfo() (*define.HostInfo, error) {
 	info := define.HostInfo{
 		Arch:                  runtime.GOARCH,
 		BuildahVersion:        buildah.Version,
-		DatabaseBackend:       r.state.Name(),
+		DatabaseBackend:       r.state.Name(ctx),
 		Linkmode:              linkmode.Linkmode(),
 		CPUs:                  runtime.NumCPU(),
 		CPUUtilization:        cpuUtil,

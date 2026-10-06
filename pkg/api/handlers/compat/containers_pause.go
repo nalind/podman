@@ -22,7 +22,7 @@ func PauseContainer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// the api does not error if the Container is already paused, so just into it
-	if err := con.Pause(); err != nil {
+	if err := con.Pause(r.Context()); err != nil {
 		utils.InternalServerError(w, err)
 		return
 	}

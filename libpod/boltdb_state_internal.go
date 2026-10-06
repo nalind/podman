@@ -4,6 +4,7 @@ package libpod
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"os"
 	"slices"
@@ -275,7 +276,7 @@ func (s *BoltState) getPodFromDB(id []byte, pod *Pod, podBkt *bolt.Bucket) error
 	return nil
 }
 
-func (s *BoltState) getVolumeFromDB(name []byte, volume *Volume, volBkt *bolt.Bucket) error {
+func (s *BoltState) getVolumeFromDB(ctx context.Context, name []byte, volume *Volume, volBkt *bolt.Bucket) error {
 	volDB := volBkt.Bucket(name)
 	if volDB == nil {
 		return fmt.Errorf("volume with name %s not found: %w", string(name), define.ErrNoSuchVolume)
@@ -304,7 +305,7 @@ func (s *BoltState) getVolumeFromDB(name []byte, volume *Volume, volBkt *bolt.Bu
 		if !volume.UsesVolumeDriver() {
 			return nil, nil
 		}
-		return volume.runtime.getVolumePlugin(volume.config)
+		return volume.runtime.getVolumePlugin(ctx, volume.config)
 	})
 
 	// Get the lock

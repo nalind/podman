@@ -2,6 +2,7 @@ package bindings_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -21,12 +22,12 @@ var _ = Describe("Podman manifests", func() {
 		s  *gexec.Session
 	)
 
-	BeforeEach(func() {
+	BeforeEach(func(ctx context.Context) {
 		bt = newBindingTest()
 		bt.RestoreImagesFromCache()
 		s = bt.startAPIService()
 		time.Sleep(1 * time.Second)
-		err := bt.NewConnection()
+		err := bt.NewConnection(ctx)
 		Expect(err).ToNot(HaveOccurred())
 	})
 

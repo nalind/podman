@@ -3,6 +3,7 @@
 package libpod
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -344,7 +345,7 @@ func (s *SQLiteState) createPod(rawJSON string) (*Pod, error) {
 }
 
 // Finalize a volume that was pulled out of the database
-func finalizeVolumeSqlite(vol *Volume) error {
+func finalizeVolumeSqlite(ctx context.Context, vol *Volume) error {
 	// Get the lock
 	lock, err := vol.runtime.lockManager.RetrieveLock(vol.config.LockID)
 	if err != nil {
@@ -357,7 +358,7 @@ func finalizeVolumeSqlite(vol *Volume) error {
 		if !vol.UsesVolumeDriver() {
 			return nil, nil
 		}
-		return vol.runtime.getVolumePlugin(vol.config)
+		return vol.runtime.getVolumePlugin(ctx, vol.config)
 	})
 
 	return nil

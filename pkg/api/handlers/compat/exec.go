@@ -192,7 +192,7 @@ func ExecStartHandler(w http.ResponseWriter, r *http.Request) {
 		// If we are detaching, we do NOT want to hijack.
 		// Instead, we perform a detached start, and return 200 if
 		// successful.
-		if err := sessionCtr.ExecStart(sessionID); err != nil {
+		if err := sessionCtr.ExecStart(r.Context(), sessionID); err != nil {
 			utils.InternalServerError(w, err)
 			return
 		}

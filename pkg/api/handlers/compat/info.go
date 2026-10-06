@@ -38,7 +38,7 @@ func GetInfo(w http.ResponseWriter, r *http.Request) {
 	// 500 internal
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 
-	infoData, err := runtime.Info()
+	infoData, err := runtime.Info(r.Context())
 	if err != nil {
 		utils.Error(w, http.StatusInternalServerError, fmt.Errorf("failed to obtain system memory info: %w", err))
 		return

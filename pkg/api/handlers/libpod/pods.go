@@ -74,7 +74,7 @@ func PodCreate(w http.ResponseWriter, r *http.Request) {
 		psg.InfraContainerSpec.RawImageName = psg.InfraImage
 	}
 	podSpecComplete := entities.PodSpec{PodSpecGen: psg}
-	pod, err := generate.MakePod(&podSpecComplete, runtime)
+	pod, err := generate.MakePod(r.Context(), &podSpecComplete, runtime)
 	if err != nil {
 		httpCode := http.StatusInternalServerError
 		if errors.Is(err, define.ErrPodExists) {
@@ -115,7 +115,7 @@ func PodInspect(w http.ResponseWriter, r *http.Request) {
 		utils.PodNotFound(w, name, err)
 		return
 	}
-	podData, err := pod.Inspect()
+	podData, err := pod.Inspect(r.Context())
 	if err != nil {
 		utils.Error(w, http.StatusInternalServerError, err)
 		return

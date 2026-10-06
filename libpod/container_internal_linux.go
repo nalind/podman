@@ -77,7 +77,7 @@ func (c *Container) prepare(ctx context.Context) error {
 		defer wg.Done()
 		if c.state.State == define.ContainerStateStopped {
 			// networking should not be reused after a stop
-			if err := c.cleanupNetwork(); err != nil {
+			if err := c.cleanupNetwork(ctx); err != nil {
 				createNetNSErr = err
 				return
 			}
@@ -91,7 +91,7 @@ func (c *Container) prepare(ctx context.Context) error {
 				return
 			}
 
-			netNS, networkStatus, createNetNSErr = c.runtime.createNetNS(c)
+			netNS, networkStatus, createNetNSErr = c.runtime.createNetNS(ctx, c)
 			if createNetNSErr != nil {
 				return
 			}
@@ -139,7 +139,7 @@ func (c *Container) prepare(ctx context.Context) error {
 	// Only trigger storage cleanup if mountStorage was successful.
 	// Otherwise, we may mess up mount counters.
 	if createNetNSErr != nil && mountStorageErr == nil {
-		if err := c.cleanupStorage(); err != nil {
+		if err := c.cleanupStorage(ctx); err != nil {
 			// createErr is guaranteed non-nil, so print
 			// unconditionally
 			logrus.Errorf("Preparing container %s: %v", c.ID(), createErr)
@@ -150,7 +150,7 @@ func (c *Container) prepare(ctx context.Context) error {
 	// It's OK to unconditionally trigger network cleanup. If the network
 	// isn't ready it will do nothing.
 	if createErr != nil {
-		if err := c.cleanupNetwork(); err != nil {
+		if err := c.cleanupNetwork(ctx); err != nil {
 			logrus.Errorf("Preparing container %s: %v", c.ID(), createErr)
 			createErr = fmt.Errorf("cleaning up container %s network after setup failure: %w", c.ID(), err)
 		}
@@ -174,11 +174,11 @@ func (c *Container) prepare(ctx context.Context) error {
 }
 
 // cleanupNetwork unmounts and cleans up the container's network
-func (c *Container) cleanupNetwork() error {
+func (c *Container) cleanupNetwork(ctx context.Context) error {
 	if c.config.NetNsCtr != "" {
 		return nil
 	}
-	netDisabled, err := c.NetworkDisabled()
+	netDisabled, err := c.NetworkDisabled(ctx)
 	if err != nil {
 		return err
 	}
@@ -191,7 +191,7 @@ func (c *Container) cleanupNetwork() error {
 	}
 
 	// Stop the container's network namespace (if it has one)
-	neterr := c.runtime.teardownNetNS(c)
+	neterr := c.runtime.teardownNetNS(ctx, c)
 	c.state.NetNS = ""
 	c.state.NetworkStatus = nil
 
@@ -209,8 +209,8 @@ func (c *Container) cleanupNetwork() error {
 
 // reloadNetwork reloads the network for the given container, recreating
 // firewall rules.
-func (c *Container) reloadNetwork() error {
-	result, err := c.runtime.reloadContainerNetwork(c)
+func (c *Container) reloadNetwork(ctx context.Context) error {
+	result, err := c.runtime.reloadContainerNetwork(ctx, c)
 	if err != nil {
 		return err
 	}
@@ -711,7 +711,7 @@ func (c *Container) makePlatformMtabLink(etcInTheContainerFd, rootUID, rootGID i
 	return nil
 }
 
-func (c *Container) getPlatformRunPath() (string, error) {
+func (c *Container) getPlatformRunPath(context.Context) (string, error) {
 	return "/run", nil
 }
 

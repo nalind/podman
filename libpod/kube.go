@@ -809,7 +809,7 @@ func simplePodWithV1Containers(ctx context.Context, ctrs []*Container, getServic
 			}
 		}
 
-		if !ctr.HostNetwork() {
+		if !ctr.HostNetwork(ctx) {
 			hostNetwork = false
 		}
 		if !ctr.IDMappings().HostUIDMapping || !ctr.IDMappings().HostGIDMapping {
@@ -936,7 +936,7 @@ func containerToV1Container(ctx context.Context, c *Container, getService bool) 
 		kubeVolumes = append(kubeVolumes, volumes...)
 	}
 
-	portmappings, err := c.PortMappings()
+	portmappings, err := c.PortMappings(ctx)
 	if err != nil {
 		return kubeContainer, kubeVolumes, nil, annotations, err
 	}

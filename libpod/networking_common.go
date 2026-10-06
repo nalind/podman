@@ -3,6 +3,7 @@
 package libpod
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -161,7 +162,7 @@ func isBridgeNetMode(n namespaces.NetworkMode) error {
 // firewall configuration.
 // Efforts will be made to preserve MAC and IP addresses.
 // Only works on containers with bridge networking.
-func (r *Runtime) reloadContainerNetwork(ctr *Container) (map[string]types.StatusBlock, error) {
+func (r *Runtime) reloadContainerNetwork(ctx context.Context, ctr *Container) (map[string]types.StatusBlock, error) {
 	if ctr.state.NetNS == "" {
 		return nil, fmt.Errorf("container %s network is not configured, refusing to reload: %w", ctr.ID(), define.ErrCtrStateInvalid)
 	}
@@ -207,7 +208,7 @@ func (r *Runtime) reloadContainerNetwork(ctr *Container) (map[string]types.Statu
 	}
 	ctr.perNetworkOpts = newNetworkOpts
 
-	return r.configureNetNS(ctr, ctr.state.NetNS, true)
+	return r.configureNetNS(ctx, ctr, ctr.state.NetNS, true)
 }
 
 // Produce an InspectNetworkSettings containing information on the container

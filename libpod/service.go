@@ -142,7 +142,7 @@ func (c *Container) canStopServiceContainer() (*serviceContainerReport, error) {
 }
 
 // Checks whether the service container can be stopped and does so.
-func (p *Pod) maybeStopServiceContainer() error {
+func (p *Pod) maybeStopServiceContainer(ctx context.Context) error {
 	if !p.hasServiceContainer() {
 		return nil
 	}
@@ -173,14 +173,14 @@ func (p *Pod) maybeStopServiceContainer() error {
 			// Note that the service container runs catatonit which
 			// will exit gracefully on SIGINT.
 			logrus.Debugf("Stopping service container %s", serviceCtr.ID())
-			if err := serviceCtr.Kill(uint(unix.SIGINT)); err != nil && !errors.Is(err, define.ErrCtrStateInvalid) {
+			if err := serviceCtr.Kill(ctx, uint(unix.SIGINT)); err != nil && !errors.Is(err, define.ErrCtrStateInvalid) {
 				logrus.Debugf("Error stopping service container %s: %v", serviceCtr.ID(), err)
 			}
 		}
 
 		kill := func() {
 			logrus.Debugf("Killing service container %s", serviceCtr.ID())
-			if err := serviceCtr.Kill(uint(unix.SIGKILL)); err != nil && !errors.Is(err, define.ErrCtrStateInvalid) {
+			if err := serviceCtr.Kill(ctx, uint(unix.SIGKILL)); err != nil && !errors.Is(err, define.ErrCtrStateInvalid) {
 				logrus.Debugf("Error killing service container %s: %v", serviceCtr.ID(), err)
 			}
 		}
@@ -255,7 +255,7 @@ func (c *Container) canRemoveServiceContainer() (bool, error) {
 
 // Checks whether the service container can be removed and does so.
 // It also unlinks the pod from the service container.
-func (p *Pod) maybeRemoveServiceContainer() error {
+func (p *Pod) maybeRemoveServiceContainer(ctx context.Context) error {
 	if !p.hasServiceContainer() {
 		return nil
 	}
@@ -303,7 +303,7 @@ func (p *Pod) maybeRemoveServiceContainer() error {
 			return
 		}
 		logrus.Debugf("Removing service container %s", serviceCtr.ID())
-		if err := p.runtime.RemoveContainer(context.Background(), serviceCtr, true, false, nil); err != nil {
+		if err := p.runtime.RemoveContainer(ctx, serviceCtr, true, false, nil); err != nil {
 			if !errors.Is(err, define.ErrNoSuchCtr) {
 				logrus.Errorf("Removing service container %s: %v", serviceCtr.ID(), err)
 			}

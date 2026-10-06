@@ -97,7 +97,7 @@ streamLabel: // A label to flatten the scope
 			}
 			return
 		}
-		s, err := statsContainerJSON(ctnr, stats, preCPUStats, onlineCPUs)
+		s, err := statsContainerJSON(r.Context(), ctnr, stats, preCPUStats, onlineCPUs)
 		if err != nil {
 			if wroteContent {
 				logrus.Errorf("Unable to build container stats response: %v", err)

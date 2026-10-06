@@ -48,7 +48,7 @@ func ResizeTTY(w http.ResponseWriter, r *http.Request) {
 			utils.ContainerNotFound(w, name, err)
 			return
 		}
-		if err := ctnr.AttachResize(sz); err != nil {
+		if err := ctnr.AttachResize(r.Context(), sz); err != nil {
 			if !errors.Is(err, define.ErrCtrStateInvalid) {
 				utils.InternalServerError(w, fmt.Errorf("cannot resize container: %w", err))
 			} else {
@@ -73,7 +73,7 @@ func ResizeTTY(w http.ResponseWriter, r *http.Request) {
 			utils.Error(w, http.StatusConflict, fmt.Errorf("container %q in wrong state %q", name, state.String()))
 			return
 		}
-		if err := ctnr.ExecResize(name, sz); err != nil {
+		if err := ctnr.ExecResize(r.Context(), name, sz); err != nil {
 			if !errors.Is(err, define.ErrExecSessionStateInvalid) || !query.IgnoreNotRunning {
 				utils.InternalServerError(w, fmt.Errorf("cannot resize session: %w", err))
 				return

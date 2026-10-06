@@ -311,8 +311,8 @@ func (ic *ContainerEngine) prunePodHelper(ctx context.Context) ([]*entities.PodP
 	return reports, nil
 }
 
-func (ic *ContainerEngine) PodCreate(_ context.Context, specg entities.PodSpec) (*entities.PodCreateReport, error) {
-	pod, err := generate.MakePod(&specg, ic.Libpod)
+func (ic *ContainerEngine) PodCreate(ctx context.Context, specg entities.PodSpec) (*entities.PodCreateReport, error) {
+	pod, err := generate.MakePod(ctx, &specg, ic.Libpod)
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +321,7 @@ func (ic *ContainerEngine) PodCreate(_ context.Context, specg entities.PodSpec) 
 
 func (ic *ContainerEngine) PodClone(ctx context.Context, podClone entities.PodCloneOptions) (*entities.PodCloneReport, error) {
 	spec := specgen.NewPodSpecGenerator()
-	p, err := generate.PodConfigToSpec(ic.Libpod, spec, &podClone.InfraOptions, podClone.ID)
+	p, err := generate.PodConfigToSpec(ctx, ic.Libpod, spec, &podClone.InfraOptions, podClone.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -362,7 +362,7 @@ func (ic *ContainerEngine) PodClone(ctx context.Context, podClone entities.PodCl
 	}
 
 	podSpec := entities.PodSpec{PodSpecGen: *spec}
-	pod, err := generate.MakePod(&podSpec, ic.Libpod)
+	pod, err := generate.MakePod(ctx, &podSpec, ic.Libpod)
 	if err != nil {
 		return nil, err
 	}
@@ -522,13 +522,13 @@ func (ic *ContainerEngine) PodPs(_ context.Context, options entities.PodPSOption
 	return reports, nil
 }
 
-func (ic *ContainerEngine) PodInspect(_ context.Context, nameOrIDs []string, options entities.InspectOptions) ([]*entities.PodInspectReport, []error, error) {
+func (ic *ContainerEngine) PodInspect(ctx context.Context, nameOrIDs []string, options entities.InspectOptions) ([]*entities.PodInspectReport, []error, error) {
 	if options.Latest {
 		pod, err := ic.Libpod.GetLatestPod()
 		if err != nil {
 			return nil, nil, err
 		}
-		inspect, err := pod.Inspect()
+		inspect, err := pod.Inspect(ctx)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -554,7 +554,7 @@ func (ic *ContainerEngine) PodInspect(_ context.Context, nameOrIDs []string, opt
 			return nil, nil, err
 		}
 
-		inspect, err := pod.Inspect()
+		inspect, err := pod.Inspect(ctx)
 		if err != nil {
 			// ErrNoSuchPod is non-fatal, other errors will be
 			// treated as fatal.

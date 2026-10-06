@@ -3,6 +3,7 @@
 package generate
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -83,7 +84,7 @@ func setupApparmor(s *specgen.SpecGenerator, rtc *config.Config, g *generate.Gen
 	return nil
 }
 
-func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator, newImage *libimage.Image, rtc *config.Config) error {
+func securityConfigureGenerator(ctx context.Context, s *specgen.SpecGenerator, g *generate.Generator, newImage *libimage.Image, rtc *config.Config) error {
 	var (
 		caplist []string
 		err     error
@@ -202,7 +203,7 @@ func securityConfigureGenerator(s *specgen.SpecGenerator, g *generate.Generator,
 
 	// HANDLE SECCOMP
 	if s.SeccompProfilePath != "unconfined" {
-		seccompConfig, err := getSeccompConfig(s, configSpec, newImage)
+		seccompConfig, err := getSeccompConfig(ctx, s, configSpec, newImage)
 		if err != nil {
 			return err
 		}

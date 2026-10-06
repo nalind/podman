@@ -171,9 +171,9 @@ func (p *Pod) stopWithTimeout(ctx context.Context, cleanup bool, timeout int) (m
 		for _, ctr := range allCtrs {
 			var err error
 			if timeout > -1 {
-				err = ctr.StopWithTimeout(uint(timeout))
+				err = ctr.StopWithTimeout(ctx, uint(timeout))
 			} else {
-				err = ctr.Stop()
+				err = ctr.Stop(ctx)
 			}
 			if err != nil && !errors.Is(err, define.ErrCtrStateInvalid) && !errors.Is(err, define.ErrCtrStopped) {
 				ctrErrors[ctr.ID()] = err
@@ -201,7 +201,7 @@ func (p *Pod) stopWithTimeout(ctx context.Context, cleanup bool, timeout int) (m
 		return ctrErrors, fmt.Errorf("stopping some containers: %w", define.ErrPodPartialFail)
 	}
 
-	if err := p.maybeStopServiceContainer(); err != nil {
+	if err := p.maybeStopServiceContainer(ctx); err != nil {
 		return nil, err
 	}
 
@@ -315,7 +315,7 @@ func (p *Pod) Cleanup(ctx context.Context) (map[string]error, error) {
 		return ctrErrors, fmt.Errorf("cleaning up some containers: %w", define.ErrPodPartialFail)
 	}
 
-	if err := p.maybeStopServiceContainer(); err != nil {
+	if err := p.maybeStopServiceContainer(ctx); err != nil {
 		return nil, err
 	}
 
@@ -353,7 +353,7 @@ func (p *Pod) Pause(ctx context.Context) (map[string]error, error) {
 	for _, ctr := range allCtrs {
 		c := ctr
 		logrus.Debugf("Adding parallel job to pause container %s", c.ID())
-		retChan := parallel.Enqueue(ctx, c.Pause)
+		retChan := parallel.Enqueue(ctx, func() error { return c.Pause(ctx) })
 
 		ctrErrChan[c.ID()] = retChan
 	}
@@ -409,7 +409,7 @@ func (p *Pod) Unpause(ctx context.Context) (map[string]error, error) {
 	for _, ctr := range allCtrs {
 		c := ctr
 		logrus.Debugf("Adding parallel job to unpause container %s", c.ID())
-		retChan := parallel.Enqueue(ctx, c.Unpause)
+		retChan := parallel.Enqueue(ctx, func() error { return c.Unpause(ctx) })
 
 		ctrErrChan[c.ID()] = retChan
 	}
@@ -523,7 +523,7 @@ func (p *Pod) Kill(ctx context.Context, signal uint) (map[string]error, error) {
 		c := ctr
 		logrus.Debugf("Adding parallel job to kill container %s", c.ID())
 		retChan := parallel.Enqueue(ctx, func() error {
-			return c.Kill(signal)
+			return c.Kill(ctx, signal)
 		})
 
 		ctrErrChan[c.ID()] = retChan
@@ -547,7 +547,7 @@ func (p *Pod) Kill(ctx context.Context, signal uint) (map[string]error, error) {
 		return ctrErrors, fmt.Errorf("killing some containers: %w", define.ErrPodPartialFail)
 	}
 
-	if err := p.maybeStopServiceContainer(); err != nil {
+	if err := p.maybeStopServiceContainer(ctx); err != nil {
 		return nil, err
 	}
 
@@ -592,7 +592,7 @@ func containerStatusFromContainers(allCtrs []*Container) (map[string]define.Cont
 }
 
 // Inspect returns a PodInspect struct to describe the pod.
-func (p *Pod) Inspect() (*define.InspectPodData, error) {
+func (p *Pod) Inspect(ctx context.Context) (*define.InspectPodData, error) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	if err := p.updatePod(); err != nil {
@@ -668,7 +668,7 @@ func (p *Pod) Inspect() (*define.InspectPodData, error) {
 		infraConfig.UserNS = p.NamespaceMode(specs.UserNamespace)
 		infraConfig.UtsNS = p.NamespaceMode(specs.UTSNamespace)
 		namedVolumes, mounts := infra.SortUserVolumes(infra.config.Spec)
-		inspectMounts, err = infra.GetMounts(namedVolumes, infra.config.ImageVolumes, mounts)
+		inspectMounts, err = infra.GetMounts(ctx, namedVolumes, infra.config.ImageVolumes, mounts)
 		infraSecurity = infra.GetSecurityOptions()
 		if err != nil {
 			return nil, err

@@ -69,7 +69,7 @@ loop: // break out of for/select infinite` loop
 		case <-r.Context().Done():
 			break loop
 		default:
-			output, err := c.Top(args)
+			output, err := c.Top(r.Context(), args)
 			if err != nil {
 				if !statusWritten {
 					utils.InternalServerError(w, err)

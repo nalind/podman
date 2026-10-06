@@ -5,6 +5,7 @@ package libpod
 import (
 	"bufio"
 	"bytes"
+	"context"
 	stdjson "encoding/json"
 	"errors"
 	"fmt"
@@ -202,14 +203,14 @@ func hasCurrentUserMapped(ctr *Container) bool {
 }
 
 // CreateContainer creates a container.
-func (r *ConmonOCIRuntime) CreateContainer(ctr *Container, restoreOptions *ContainerCheckpointOptions) (int64, error) {
+func (r *ConmonOCIRuntime) CreateContainer(ctx context.Context, ctr *Container, restoreOptions *ContainerCheckpointOptions) (int64, error) {
 	if !hasCurrentUserMapped(ctr) || ctr.config.RootfsMapping != nil {
 		// if we are running a non privileged container, be sure to umount some kernel paths so they are not
 		// bind mounted inside the container at all.
 		hideFiles := !ctr.config.Privileged && !rootless.IsRootless()
-		return r.createRootlessContainer(ctr, restoreOptions, hideFiles)
+		return r.createRootlessContainer(ctx, ctr, restoreOptions, hideFiles)
 	}
-	return r.createOCIContainer(ctr, restoreOptions)
+	return r.createOCIContainer(ctx, ctr, restoreOptions)
 }
 
 // StartContainer starts the given container.
@@ -703,9 +704,14 @@ func isRetryable(err error) bool {
 }
 
 // openControlFile opens the terminal control file.
-func openControlFile(ctr *Container, parentDir string) (*os.File, error) {
+func openControlFile(ctx context.Context, ctr *Container, parentDir string) (*os.File, error) {
 	controlPath := filepath.Join(parentDir, "ctl")
 	for range 600 {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 		controlFile, err := os.OpenFile(controlPath, unix.O_WRONLY|unix.O_NONBLOCK, 0)
 		if err == nil {
 			return controlFile, nil
@@ -719,8 +725,8 @@ func openControlFile(ctr *Container, parentDir string) (*os.File, error) {
 }
 
 // AttachResize resizes the terminal used by the given container.
-func (r *ConmonOCIRuntime) AttachResize(ctr *Container, newSize resize.TerminalSize) error {
-	controlFile, err := openControlFile(ctr, ctr.bundlePath())
+func (r *ConmonOCIRuntime) AttachResize(ctx context.Context, ctr *Container, newSize resize.TerminalSize) error {
+	controlFile, err := openControlFile(ctx, ctr, ctr.bundlePath())
 	if err != nil {
 		return err
 	}
@@ -934,7 +940,7 @@ func waitPidStop(pid int, timeout time.Duration) error {
 	}
 }
 
-func (r *ConmonOCIRuntime) getLogData(ctr *Container) (string, map[string]string, error) {
+func (r *ConmonOCIRuntime) getLogData(ctx context.Context, ctr *Container) (string, map[string]string, error) {
 	logTag := ctr.LogTag()
 	logLabels := ctr.LogLabels()
 
@@ -943,7 +949,7 @@ func (r *ConmonOCIRuntime) getLogData(ctr *Container) (string, map[string]string
 		return "", nil, nil
 	}
 
-	data, err := ctr.inspectLocked(false)
+	data, err := ctr.inspectLocked(ctx, false)
 	if err != nil {
 		// FIXME: this error should probably be returned
 		return "", nil, nil //nolint: nilerr
@@ -1015,7 +1021,7 @@ func getPreserveFdExtraFiles(preserveFD []uint, preserveFDs uint) (uint, []*os.F
 }
 
 // createOCIContainer generates this container's main conmon instance and prepares it for starting
-func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *ContainerCheckpointOptions) (int64, error) {
+func (r *ConmonOCIRuntime) createOCIContainer(ctx context.Context, ctr *Container, restoreOptions *ContainerCheckpointOptions) (int64, error) {
 	var stderrBuf bytes.Buffer
 
 	parentSyncPipe, childSyncPipe, err := newPipe()
@@ -1036,7 +1042,7 @@ func (r *ConmonOCIRuntime) createOCIContainer(ctr *Container, restoreOptions *Co
 		ociLog = filepath.Join(ctr.state.RunDir, "oci-log")
 	}
 
-	logTag, logLabels, err := r.getLogData(ctr)
+	logTag, logLabels, err := r.getLogData(ctx, ctr)
 	if err != nil {
 		return 0, err
 	}

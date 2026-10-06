@@ -3,6 +3,7 @@
 package libpod
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -101,7 +102,7 @@ func NewSqliteState(runtime *Runtime) (_ State, defErr error) {
 }
 
 // Name gets the name of the current DB backend.
-func (s *SQLiteState) Name() string {
+func (s *SQLiteState) Name(context.Context) string {
 	return config.DBBackendSQLite.String()
 }
 
@@ -2208,7 +2209,7 @@ func (s *SQLiteState) SaveVolume(volume *Volume) (defErr error) {
 }
 
 // AllVolumes returns all volumes present in the state.
-func (s *SQLiteState) AllVolumes() ([]*Volume, error) {
+func (s *SQLiteState) AllVolumes(ctx context.Context) ([]*Volume, error) {
 	if !s.valid {
 		return nil, define.ErrDBClosed
 	}
@@ -2235,7 +2236,7 @@ func (s *SQLiteState) AllVolumes() ([]*Volume, error) {
 			return nil, fmt.Errorf("unmarshalling volume config: %w", err)
 		}
 
-		if err := finalizeVolumeSqlite(vol); err != nil {
+		if err := finalizeVolumeSqlite(ctx, vol); err != nil {
 			return nil, err
 		}
 
@@ -2249,7 +2250,7 @@ func (s *SQLiteState) AllVolumes() ([]*Volume, error) {
 }
 
 // Volume retrieves a volume from full name.
-func (s *SQLiteState) Volume(name string) (*Volume, error) {
+func (s *SQLiteState) Volume(ctx context.Context, name string) (*Volume, error) {
 	if name == "" {
 		return nil, define.ErrEmptyID
 	}
@@ -2278,7 +2279,7 @@ func (s *SQLiteState) Volume(name string) (*Volume, error) {
 		return nil, fmt.Errorf("unmarshalling volume %s config JSON: %w", name, err)
 	}
 
-	if err := finalizeVolumeSqlite(vol); err != nil {
+	if err := finalizeVolumeSqlite(ctx, vol); err != nil {
 		return nil, err
 	}
 
@@ -2286,7 +2287,7 @@ func (s *SQLiteState) Volume(name string) (*Volume, error) {
 }
 
 // LookupVolume locates a volume from a unique partial name.
-func (s *SQLiteState) LookupVolume(name string) (*Volume, error) {
+func (s *SQLiteState) LookupVolume(ctx context.Context, name string) (*Volume, error) {
 	if name == "" {
 		return nil, define.ErrEmptyID
 	}
@@ -2331,7 +2332,7 @@ func (s *SQLiteState) LookupVolume(name string) (*Volume, error) {
 		return nil, fmt.Errorf("unmarshalling volume %s config JSON: %w", name, err)
 	}
 
-	if err := finalizeVolumeSqlite(vol); err != nil {
+	if err := finalizeVolumeSqlite(ctx, vol); err != nil {
 		return nil, err
 	}
 

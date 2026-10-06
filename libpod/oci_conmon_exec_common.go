@@ -3,6 +3,7 @@
 package libpod
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -28,7 +29,7 @@ import (
 )
 
 // ExecContainer executes a command in a running container
-func (r *ConmonOCIRuntime) ExecContainer(c *Container, sessionID string, options *ExecOptions, streams *define.AttachStreams, newSize *resize.TerminalSize) (int, chan error, error) {
+func (r *ConmonOCIRuntime) ExecContainer(ctx context.Context, c *Container, sessionID string, options *ExecOptions, streams *define.AttachStreams, newSize *resize.TerminalSize) (int, chan error, error) {
 	if options == nil {
 		return -1, nil, fmt.Errorf("must provide an ExecOptions struct to ExecContainer: %w", define.ErrInvalidArg)
 	}
@@ -68,7 +69,7 @@ func (r *ConmonOCIRuntime) ExecContainer(c *Container, sessionID string, options
 	attachChan := make(chan error)
 	go func() {
 		// attachToExec is responsible for closing pipes
-		attachChan <- c.attachToExec(streams, options.DetachKeys, sessionID, pipes.startPipe, pipes.attachPipe, newSize)
+		attachChan <- c.attachToExec(ctx, streams, options.DetachKeys, sessionID, pipes.startPipe, pipes.attachPipe, newSize)
 		close(attachChan)
 	}()
 
@@ -152,7 +153,7 @@ type conmonPipeData struct {
 
 // ExecContainerDetached executes a command in a running container, but does
 // not attach to it.
-func (r *ConmonOCIRuntime) ExecContainerDetached(ctr *Container, sessionID string, options *ExecOptions, stdin bool) (int, error) {
+func (r *ConmonOCIRuntime) ExecContainerDetached(_ context.Context, ctr *Container, sessionID string, options *ExecOptions, stdin bool) (int, error) {
 	if options == nil {
 		return -1, fmt.Errorf("must provide exec options to ExecContainerHTTP: %w", define.ErrInvalidArg)
 	}
@@ -191,8 +192,8 @@ func (r *ConmonOCIRuntime) ExecContainerDetached(ctr *Container, sessionID strin
 }
 
 // ExecAttachResize resizes the TTY of the given exec session.
-func (r *ConmonOCIRuntime) ExecAttachResize(ctr *Container, sessionID string, newSize resize.TerminalSize) error {
-	controlFile, err := openControlFile(ctr, ctr.execBundlePath(sessionID))
+func (r *ConmonOCIRuntime) ExecAttachResize(ctx context.Context, ctr *Container, sessionID string, newSize resize.TerminalSize) error {
+	controlFile, err := openControlFile(ctx, ctr, ctr.execBundlePath(sessionID))
 	if err != nil {
 		return err
 	}
@@ -537,7 +538,7 @@ func attachExecHTTP(c *Container, sessionID string, r *http.Request, w http.Resp
 
 	// resize before we start the container process
 	if newSize != nil {
-		err = c.ociRuntime.ExecAttachResize(c, sessionID, *newSize)
+		err = c.ociRuntime.ExecAttachResize(r.Context(), c, sessionID, *newSize)
 		if err != nil {
 			logrus.Warnf("Resize failed: %v", err)
 		}

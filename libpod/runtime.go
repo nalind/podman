@@ -814,15 +814,15 @@ func (r *Runtime) libartifactEvents(store *artStore.ArtifactStore) {
 // DeferredShutdown shuts down the runtime without exposing any
 // errors. This is only meant to be used when the runtime is being
 // shutdown within a defer statement; else use Shutdown
-func (r *Runtime) DeferredShutdown(force bool) {
-	_ = r.Shutdown(force)
+func (r *Runtime) DeferredShutdown(ctx context.Context, force bool) {
+	_ = r.Shutdown(ctx, force)
 }
 
 // Shutdown shuts down the runtime and associated containers and storage
 // If force is true, containers and mounted storage will be shut down before
 // cleaning up; if force is false, an error will be returned if there are
 // still containers running or mounted
-func (r *Runtime) Shutdown(force bool) error {
+func (r *Runtime) Shutdown(ctx context.Context, force bool) error {
 	if !r.valid {
 		return nil
 	}
@@ -841,7 +841,7 @@ func (r *Runtime) Shutdown(force bool) error {
 			logrus.Errorf("Retrieving containers from database: %v", err)
 		} else {
 			for _, ctr := range ctrs {
-				if err := ctr.StopWithTimeout(r.config.Engine.StopTimeout); err != nil {
+				if err := ctr.StopWithTimeout(ctx, r.config.Engine.StopTimeout); err != nil {
 					logrus.Errorf("Stopping container %s: %v", ctr.ID(), err)
 				}
 			}
@@ -896,7 +896,7 @@ func (r *Runtime) refresh(ctx context.Context, alivePath string) error {
 	// Only error that can be returned is no BoltDB present.
 	// In that case, no need to do anything.
 	if err := r.checkCanMigrate(); err == nil {
-		if err := r.migrateDB(); err != nil {
+		if err := r.migrateDB(ctx); err != nil {
 			logrus.Errorf("Automatic migration from BoltDB to SQLite failed: %v", err)
 		}
 	}
@@ -920,7 +920,7 @@ func (r *Runtime) refresh(ctx context.Context, alivePath string) error {
 	if err != nil {
 		return fmt.Errorf("retrieving all pods from state: %w", err)
 	}
-	vols, err := r.state.AllVolumes()
+	vols, err := r.state.AllVolumes(ctx)
 	if err != nil {
 		return fmt.Errorf("retrieving all volumes from state: %w", err)
 	}
@@ -976,8 +976,8 @@ func (r *Runtime) refresh(ctx context.Context, alivePath string) error {
 }
 
 // Info returns the store and host information
-func (r *Runtime) Info() (*define.Info, error) {
-	return r.info()
+func (r *Runtime) Info(ctx context.Context) (*define.Info, error) {
+	return r.info(ctx)
 }
 
 // generateName generates a unique name for a container or pod.
@@ -1166,7 +1166,7 @@ func (r *Runtime) EnableLabeling() bool {
 }
 
 // getVolumePlugin gets a specific volume plugin.
-func (r *Runtime) getVolumePlugin(volConfig *VolumeConfig) (*plugin.VolumePlugin, error) {
+func (r *Runtime) getVolumePlugin(ctx context.Context, volConfig *VolumeConfig) (*plugin.VolumePlugin, error) {
 	// There is no plugin for local.
 	name := volConfig.Driver
 	timeout := volConfig.Timeout
@@ -1182,7 +1182,7 @@ func (r *Runtime) getVolumePlugin(volConfig *VolumeConfig) (*plugin.VolumePlugin
 		return nil, fmt.Errorf("no volume plugin with name %s available: %w", name, define.ErrMissingPlugin)
 	}
 
-	return plugin.GetVolumePlugin(name, pluginPath, timeout, r.config)
+	return plugin.GetVolumePlugin(ctx, name, pluginPath, timeout, r.config)
 }
 
 // GetSecretsStorageDir returns the directory that the secrets manager should take
@@ -1263,7 +1263,7 @@ func (r *Runtime) SetRemoteURI(uri string) {
 // are currently being held, formatted as []uint32.
 // If the map returned is not empty, you should immediately renumber locks on
 // the runtime, because you have a deadlock waiting to happen.
-func (r *Runtime) LockConflicts() (map[uint32][]string, []uint32, error) {
+func (r *Runtime) LockConflicts(ctx context.Context) (map[uint32][]string, []uint32, error) {
 	// Make an internal map to store what lock is associated with what
 	locksInUse := make(map[uint32][]string)
 
@@ -1287,7 +1287,7 @@ func (r *Runtime) LockConflicts() (map[uint32][]string, []uint32, error) {
 		locksInUse[lockNum] = append(locksInUse[lockNum], podString)
 	}
 
-	volumes, err := r.state.AllVolumes()
+	volumes, err := r.state.AllVolumes(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1383,7 +1383,7 @@ func (r *Runtime) PruneBuildContainers() ([]*reports.PruneReport, error) {
 
 // SystemCheck checks our storage for consistency, and depending on the options
 // specified, will attempt to remove anything which fails consistency checks.
-func (r *Runtime) SystemCheck(_ context.Context, options entities.SystemCheckOptions) (entities.SystemCheckReport, error) {
+func (r *Runtime) SystemCheck(options entities.SystemCheckOptions) (entities.SystemCheckReport, error) {
 	what := storage.CheckEverything()
 	if options.Quick {
 		// Turn off checking layer digests and layer contents to do quick check.

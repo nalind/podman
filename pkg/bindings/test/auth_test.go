@@ -1,6 +1,7 @@
 package bindings_test
 
 import (
+	"context"
 	"os"
 	"time"
 
@@ -21,7 +22,7 @@ var _ = Describe("Podman images", func() {
 		err      error
 	)
 
-	BeforeEach(func() {
+	BeforeEach(func(ctx context.Context) {
 		registryOptions := &podmanRegistry.Options{
 			PodmanPath: getPodmanBinary(),
 		}
@@ -36,7 +37,7 @@ var _ = Describe("Podman images", func() {
 		bt.RestoreImagesFromCache()
 		s = bt.startAPIService()
 		time.Sleep(1 * time.Second)
-		err := bt.NewConnection()
+		err := bt.NewConnection(ctx)
 		Expect(err).ToNot(HaveOccurred())
 	})
 

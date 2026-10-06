@@ -30,10 +30,10 @@ var _ = Describe("Verify Podman resources", func() {
 		s  *Session
 	)
 
-	BeforeEach(func() {
+	BeforeEach(func(ctx context.Context) {
 		bt = newBindingTest()
 		s = bt.startAPIService()
-		err := bt.NewConnection()
+		err := bt.NewConnection(ctx)
 		Expect(err).ShouldNot(HaveOccurred())
 	})
 
@@ -42,8 +42,8 @@ var _ = Describe("Verify Podman resources", func() {
 		bt.cleanup()
 	})
 
-	It("no leaked connections", func() {
-		conn, err := bindings.NewConnection(context.Background(), bt.sock)
+	It("no leaked connections", func(ctx context.Context) {
+		conn, err := bindings.NewConnection(ctx, bt.sock)
 		Expect(err).ShouldNot(HaveOccurred())
 
 		// Record details on open file descriptors before using API

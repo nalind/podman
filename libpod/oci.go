@@ -3,6 +3,7 @@
 package libpod
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -28,7 +29,7 @@ type OCIRuntime interface { //nolint:interfacebloat
 	// The returned int64 contains the microseconds needed to restore
 	// the given container if it is a restore and if restoreOptions.PrintStats
 	// is true. In all other cases the returned int64 is 0.
-	CreateContainer(ctr *Container, restoreOptions *ContainerCheckpointOptions) (int64, error)
+	CreateContainer(ctx context.Context, ctr *Container, restoreOptions *ContainerCheckpointOptions) (int64, error)
 	// StartContainer starts the given container.
 	StartContainer(ctr *Container) error
 	// KillContainer sends the given signal to the given container.
@@ -53,7 +54,7 @@ type OCIRuntime interface { //nolint:interfacebloat
 	UnpauseContainer(ctr *Container) error
 
 	// Attach to a container.
-	Attach(ctr *Container, params *AttachOptions) error
+	Attach(ctx context.Context, ctr *Container, params *AttachOptions) error
 	// HTTPAttach performs an attach intended to be transported over HTTP.
 	// For terminal attach, the container's output will be directly streamed
 	// to output; otherwise, STDOUT and STDERR will be multiplexed, with
@@ -68,7 +69,7 @@ type OCIRuntime interface { //nolint:interfacebloat
 	// client.
 	HTTPAttach(ctr *Container, r *http.Request, w http.ResponseWriter, streams *HTTPAttachStreams, detachKeys *string, cancel <-chan bool, hijackDone chan<- bool, streamAttach, streamLogs bool) error
 	// AttachResize resizes the terminal in use by the given container.
-	AttachResize(ctr *Container, newSize resize.TerminalSize) error
+	AttachResize(ctx context.Context, ctr *Container, newSize resize.TerminalSize) error
 
 	// ExecContainer executes a command in a running container.
 	// Returns an int (PID of exec session), error channel (errors from
@@ -78,7 +79,7 @@ type OCIRuntime interface { //nolint:interfacebloat
 	// running, in a goroutine that will return via the chan error in the
 	// return signature.
 	// newSize resizes the tty to this size before the process is started, must be nil if the exec session has no tty
-	ExecContainer(ctr *Container, sessionID string, options *ExecOptions, streams *define.AttachStreams, newSize *resize.TerminalSize) (int, chan error, error)
+	ExecContainer(ctx context.Context, ctr *Container, sessionID string, options *ExecOptions, streams *define.AttachStreams, newSize *resize.TerminalSize) (int, chan error, error)
 	// ExecContainerHTTP executes a command in a running container and
 	// attaches its standard streams to a provided hijacked HTTP session.
 	// Maintains the same invariants as ExecContainer (returns on session
@@ -90,10 +91,10 @@ type OCIRuntime interface { //nolint:interfacebloat
 	// ExecContainerDetached executes a command in a running container, but
 	// does not attach to it. Returns the PID of the exec session and an
 	// error (if starting the exec session failed)
-	ExecContainerDetached(ctr *Container, sessionID string, options *ExecOptions, stdin bool) (int, error)
+	ExecContainerDetached(ctx context.Context, ctr *Container, sessionID string, options *ExecOptions, stdin bool) (int, error)
 	// ExecAttachResize resizes the terminal of a running exec session. Only
 	// allowed with sessions that were created with a TTY.
-	ExecAttachResize(ctr *Container, sessionID string, newSize resize.TerminalSize) error
+	ExecAttachResize(ctx context.Context, ctr *Container, sessionID string, newSize resize.TerminalSize) error
 	// ExecStopContainer stops a given exec session in a running container.
 	// SIGTERM with be sent initially, then SIGKILL after the given timeout.
 	// If timeout is 0, SIGKILL will be sent immediately, and SIGTERM will

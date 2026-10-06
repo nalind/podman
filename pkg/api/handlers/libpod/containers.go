@@ -143,7 +143,7 @@ func GetContainer(w http.ResponseWriter, r *http.Request) {
 		utils.ContainerNotFound(w, name, err)
 		return
 	}
-	data, err := container.Inspect(query.Size)
+	data, err := container.Inspect(r.Context(), query.Size)
 	if err != nil {
 		utils.InternalServerError(w, err)
 		return
@@ -170,7 +170,7 @@ func UnmountContainer(w http.ResponseWriter, r *http.Request) {
 	}
 	// TODO In future it might be an improvement that libpod unmount return a
 	// "container not mounted" error so we can surface that to the endpoint user
-	if err := conn.Unmount(false); err != nil {
+	if err := conn.Unmount(r.Context(), false); err != nil {
 		utils.InternalServerError(w, err)
 		return
 	}
@@ -185,7 +185,7 @@ func MountContainer(w http.ResponseWriter, r *http.Request) {
 		utils.ContainerNotFound(w, name, err)
 		return
 	}
-	m, err := conn.Mount()
+	m, err := conn.Mount(r.Context())
 	if err != nil {
 		utils.InternalServerError(w, err)
 		return
@@ -524,7 +524,7 @@ func UpdateContainer(w http.ResponseWriter, r *http.Request) {
 		Rlimits:                         rlimits,
 	}
 
-	err = ctr.Update(updateOptions)
+	err = ctr.Update(r.Context(), updateOptions)
 	if err != nil {
 		utils.InternalServerError(w, err)
 		return

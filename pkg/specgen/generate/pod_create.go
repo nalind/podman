@@ -20,11 +20,11 @@ import (
 	"go.podman.io/podman/v6/pkg/specgenutil"
 )
 
-func MakePod(p *entities.PodSpec, rt *libpod.Runtime) (_ *libpod.Pod, finalErr error) {
+func MakePod(ctx context.Context, p *entities.PodSpec, rt *libpod.Runtime) (_ *libpod.Pod, finalErr error) {
 	var createdPod *libpod.Pod
 	defer func() {
 		if finalErr != nil && createdPod != nil {
-			if _, err := rt.RemovePod(context.Background(), createdPod, true, true, nil); err != nil {
+			if _, err := rt.RemovePod(ctx, createdPod, true, true, nil); err != nil {
 				logrus.Errorf("Removing pod: %v", err)
 			}
 		}
@@ -38,7 +38,7 @@ func MakePod(p *entities.PodSpec, rt *libpod.Runtime) (_ *libpod.Pod, finalErr e
 	}
 
 	if !p.PodSpecGen.NoInfra {
-		imageName, err := PullInfraImage(rt, p.PodSpecGen.InfraImage)
+		imageName, err := PullInfraImage(ctx, rt, p.PodSpecGen.InfraImage)
 		if err != nil {
 			return nil, err
 		}
@@ -67,7 +67,7 @@ func MakePod(p *entities.PodSpec, rt *libpod.Runtime) (_ *libpod.Pod, finalErr e
 		return nil, err
 	}
 
-	pod, err := rt.NewPod(context.Background(), p.PodSpecGen, options...)
+	pod, err := rt.NewPod(p.PodSpecGen, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func MakePod(p *entities.PodSpec, rt *libpod.Runtime) (_ *libpod.Pod, finalErr e
 		if p.PodSpecGen.InfraContainerSpec.Name == "" {
 			p.PodSpecGen.InfraContainerSpec.Name = pod.ID()[:12] + "-infra"
 		}
-		_, err = CompleteSpec(context.Background(), rt, p.PodSpecGen.InfraContainerSpec)
+		_, err = CompleteSpec(ctx, rt, p.PodSpecGen.InfraContainerSpec)
 		if err != nil {
 			return nil, err
 		}
@@ -88,7 +88,7 @@ func MakePod(p *entities.PodSpec, rt *libpod.Runtime) (_ *libpod.Pod, finalErr e
 		p.PodSpecGen.InfraContainerSpec.ResourceLimits = nil
 		p.PodSpecGen.InfraContainerSpec.WeightDevice = nil
 
-		rtSpec, spec, opts, err := MakeContainer(context.Background(), rt, p.PodSpecGen.InfraContainerSpec, false, nil)
+		rtSpec, spec, opts, err := MakeContainer(ctx, rt, p.PodSpecGen.InfraContainerSpec, false, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -96,11 +96,11 @@ func MakePod(p *entities.PodSpec, rt *libpod.Runtime) (_ *libpod.Pod, finalErr e
 		spec.Pod = pod.ID()
 		opts = append(opts, rt.WithPod(pod))
 		spec.CgroupParent = pod.CgroupParent()
-		infraCtr, err := ExecuteCreate(context.Background(), rt, rtSpec, spec, true, opts...)
+		infraCtr, err := ExecuteCreate(ctx, rt, rtSpec, spec, true, opts...)
 		if err != nil {
 			return nil, err
 		}
-		pod, err = rt.AddInfra(context.Background(), pod, infraCtr)
+		pod, err = rt.AddInfra(ctx, pod, infraCtr)
 		if err != nil {
 			return nil, err
 		}
@@ -270,7 +270,7 @@ func MapSpec(p *specgen.PodSpecGenerator) (*specgen.SpecGenerator, error) {
 	return spec, nil
 }
 
-func PodConfigToSpec(rt *libpod.Runtime, spec *specgen.PodSpecGenerator, infraOptions *entities.ContainerCreateOptions, id string) (p *libpod.Pod, err error) {
+func PodConfigToSpec(ctx context.Context, rt *libpod.Runtime, spec *specgen.PodSpecGenerator, infraOptions *entities.ContainerCreateOptions, id string) (p *libpod.Pod, err error) {
 	pod, err := rt.LookupPod(id)
 	if err != nil {
 		return nil, err
@@ -330,7 +330,7 @@ func PodConfigToSpec(rt *libpod.Runtime, spec *specgen.PodSpecGenerator, infraOp
 			return nil, err
 		}
 
-		out, err := CompleteSpec(context.Background(), rt, infraSpec)
+		out, err := CompleteSpec(ctx, rt, infraSpec)
 		if err != nil {
 			return nil, err
 		}

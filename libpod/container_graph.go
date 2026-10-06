@@ -468,7 +468,7 @@ func stopContainerGraph(ctx context.Context, graph *ContainerGraph, pod *Pod, ti
 			realTimeout = *timeout
 		}
 
-		if err := ctr.stop(realTimeout); err != nil && !errors.Is(err, define.ErrCtrStateInvalid) && !errors.Is(err, define.ErrCtrStopped) {
+		if err := ctr.stop(ctx, realTimeout); err != nil && !errors.Is(err, define.ErrCtrStateInvalid) && !errors.Is(err, define.ErrCtrStopped) {
 			return err
 		}
 

@@ -3,6 +3,7 @@
 package libpod
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -72,7 +73,7 @@ func (r *MissingRuntime) Path() string {
 }
 
 // CreateContainer is not available as the runtime is missing
-func (r *MissingRuntime) CreateContainer(_ *Container, _ *ContainerCheckpointOptions) (int64, error) {
+func (r *MissingRuntime) CreateContainer(_ context.Context, _ *Container, _ *ContainerCheckpointOptions) (int64, error) {
 	return 0, r.printError()
 }
 
@@ -115,7 +116,7 @@ func (r *MissingRuntime) UnpauseContainer(_ *Container) error {
 }
 
 // Attach is not available as the runtime is missing
-func (r *MissingRuntime) Attach(_ *Container, _ *AttachOptions) error {
+func (r *MissingRuntime) Attach(_ context.Context, _ *Container, _ *AttachOptions) error {
 	return r.printError()
 }
 
@@ -125,12 +126,12 @@ func (r *MissingRuntime) HTTPAttach(_ *Container, _ *http.Request, _ http.Respon
 }
 
 // AttachResize is not available as the runtime is missing
-func (r *MissingRuntime) AttachResize(_ *Container, _ resize.TerminalSize) error {
+func (r *MissingRuntime) AttachResize(_ context.Context, _ *Container, _ resize.TerminalSize) error {
 	return r.printError()
 }
 
 // ExecContainer is not available as the runtime is missing
-func (r *MissingRuntime) ExecContainer(_ *Container, _ string, _ *ExecOptions, _ *define.AttachStreams, _ *resize.TerminalSize) (int, chan error, error) {
+func (r *MissingRuntime) ExecContainer(_ context.Context, _ *Container, _ string, _ *ExecOptions, _ *define.AttachStreams, _ *resize.TerminalSize) (int, chan error, error) {
 	return -1, nil, r.printError()
 }
 
@@ -142,12 +143,12 @@ func (r *MissingRuntime) ExecContainerHTTP(_ *Container, _ string, _ *ExecOption
 }
 
 // ExecContainerDetached is not available as the runtime is missing
-func (r *MissingRuntime) ExecContainerDetached(_ *Container, _ string, _ *ExecOptions, _ bool) (int, error) {
+func (r *MissingRuntime) ExecContainerDetached(_ context.Context, _ *Container, _ string, _ *ExecOptions, _ bool) (int, error) {
 	return -1, r.printError()
 }
 
 // ExecAttachResize is not available as the runtime is missing.
-func (r *MissingRuntime) ExecAttachResize(_ *Container, _ string, _ resize.TerminalSize) error {
+func (r *MissingRuntime) ExecAttachResize(_ context.Context, _ *Container, _ string, _ resize.TerminalSize) error {
 	return r.printError()
 }
 

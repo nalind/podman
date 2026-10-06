@@ -21,7 +21,7 @@ func UnpauseContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := con.Unpause(); err != nil {
+	if err := con.Unpause(r.Context()); err != nil {
 		utils.InternalServerError(w, err)
 		return
 	}

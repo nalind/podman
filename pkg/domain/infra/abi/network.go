@@ -112,7 +112,7 @@ func (ic *ContainerEngine) NetworkInspect(_ context.Context, namesOrIds []string
 	return networks, errs, nil
 }
 
-func (ic *ContainerEngine) NetworkReload(_ context.Context, names []string, options entities.NetworkReloadOptions) ([]*entities.NetworkReloadReport, error) {
+func (ic *ContainerEngine) NetworkReload(ctx context.Context, names []string, options entities.NetworkReloadOptions) ([]*entities.NetworkReloadReport, error) {
 	containers, err := getContainers(ic.Libpod, getContainersOptions{all: options.All, latest: options.Latest, names: names})
 	if err != nil {
 		return nil, err
@@ -122,7 +122,7 @@ func (ic *ContainerEngine) NetworkReload(_ context.Context, names []string, opti
 	for _, ctr := range containers {
 		report := new(entities.NetworkReloadReport)
 		report.Id = ctr.ID()
-		report.Err = ctr.ReloadNetwork()
+		report.Err = ctr.ReloadNetwork(ctx)
 		// ignore errors for invalid ctr state and network mode when --all is used
 		if options.All && (errors.Is(report.Err, define.ErrCtrStateInvalid) ||
 			errors.Is(report.Err, define.ErrNetworkModeInvalid)) {

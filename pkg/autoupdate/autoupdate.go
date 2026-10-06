@@ -130,7 +130,7 @@ func AutoUpdate(ctx context.Context, runtime *libpod.Runtime, options entities.A
 	}
 
 	// Connect to DBUS.
-	conn, err := systemd.ConnectToDBUS()
+	conn, err := systemd.ConnectToDBUS(ctx)
 	if err != nil {
 		logrus.Error(err.Error())
 		allErrors = append(allErrors, err)

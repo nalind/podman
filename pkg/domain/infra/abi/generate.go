@@ -48,7 +48,7 @@ func (ic *ContainerEngine) GenerateSystemd(_ context.Context, nameOrID string, o
 	return &entities.GenerateSystemdReport{Units: units}, nil
 }
 
-func (ic *ContainerEngine) GenerateSpec(_ context.Context, opts *entities.GenerateSpecOptions) (*entities.GenerateSpecReport, error) {
+func (ic *ContainerEngine) GenerateSpec(ctx context.Context, opts *entities.GenerateSpecOptions) (*entities.GenerateSpecReport, error) {
 	var spec *specgen.SpecGenerator
 	var pspec *specgen.PodSpecGenerator
 	var err error
@@ -61,7 +61,7 @@ func (ic *ContainerEngine) GenerateSpec(_ context.Context, opts *entities.Genera
 	} else if p, err := ic.Libpod.LookupPod(opts.ID); err == nil {
 		pspec = &specgen.PodSpecGenerator{}
 		pspec.Name = p.Name()
-		_, err := generateUtils.PodConfigToSpec(ic.Libpod, pspec,
+		_, err := generateUtils.PodConfigToSpec(ctx, ic.Libpod, pspec,
 			&entities.ContainerCreateOptions{
 				HealthLogDestination: define.DefaultHealthCheckLocalDestination,
 				HealthMaxLogCount:    define.DefaultHealthMaxLogCount,
@@ -168,7 +168,7 @@ func (ic *ContainerEngine) GenerateKube(ctx context.Context, nameOrIDs []string,
 		}
 
 		// Or volume.
-		vol, err := ic.Libpod.LookupVolume(nameOrID)
+		vol, err := ic.Libpod.LookupVolume(ctx, nameOrID)
 		if err != nil {
 			if !strings.Contains(err.Error(), "no such volume") {
 				return nil, err

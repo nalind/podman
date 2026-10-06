@@ -2,7 +2,11 @@
 
 package libpod
 
-import "go.podman.io/common/libnetwork/types"
+import (
+	"context"
+
+	"go.podman.io/common/libnetwork/types"
+)
 
 // State is a storage backend for libpod's current state.
 // A State is only initialized once per instance of libpod.
@@ -26,7 +30,7 @@ type State interface { //nolint:interfacebloat
 	Refresh() error
 
 	// Name() returns the name of the current state.
-	Name() string
+	Name(ctx context.Context) string
 
 	// GetDBConfig retrieves several paths configured within the database
 	// when it was created - namely, Libpod root and tmp dirs, c/storage
@@ -198,10 +202,10 @@ type State interface { //nolint:interfacebloat
 
 	// Volume accepts full name of volume
 	// If the volume doesn't exist, an error will be returned
-	Volume(volName string) (*Volume, error)
+	Volume(ctx context.Context, volName string) (*Volume, error)
 	// LookupVolume accepts an unambiguous partial name or full name of a
 	// volume. Ambiguous names will result in an error.
-	LookupVolume(name string) (*Volume, error)
+	LookupVolume(ctx context.Context, name string) (*Volume, error)
 	// HasVolume returns true if volName exists in the state,
 	// otherwise it returns false
 	HasVolume(volName string) (bool, error)
@@ -223,5 +227,5 @@ type State interface { //nolint:interfacebloat
 	// SaveVolume saves a volume's state to the database.
 	SaveVolume(volume *Volume) error
 	// AllVolumes returns all the volumes available in the state
-	AllVolumes() ([]*Volume, error)
+	AllVolumes(ctx context.Context) ([]*Volume, error)
 }

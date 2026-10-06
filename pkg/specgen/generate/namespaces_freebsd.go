@@ -3,6 +3,7 @@
 package generate
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -13,7 +14,7 @@ import (
 	"go.podman.io/podman/v6/pkg/specgen"
 )
 
-func specConfigureNamespaces(s *specgen.SpecGenerator, g *generate.Generator, rt *libpod.Runtime, pod *libpod.Pod) error {
+func specConfigureNamespaces(_ context.Context, s *specgen.SpecGenerator, g *generate.Generator, rt *libpod.Runtime, pod *libpod.Pod) error {
 	// UTS
 
 	hostname := s.Hostname

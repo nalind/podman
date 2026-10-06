@@ -107,7 +107,7 @@ func tryMappingTool(uid bool, pid int, hostID int, mappings []idtools.IDMap) err
 		return append(l, strconv.Itoa(a), strconv.Itoa(b), strconv.Itoa(c))
 	}
 
-	args := []string{path, strconv.Itoa(pid)}
+	args := []string{strconv.Itoa(pid)}
 	args = appendTriplet(args, 0, hostID, 1)
 	for _, i := range mappings {
 		if hostID >= i.HostID && hostID < i.HostID+i.Size {
@@ -121,10 +121,7 @@ func tryMappingTool(uid bool, pid int, hostID int, mappings []idtools.IDMap) err
 		}
 		args = appendTriplet(args, i.ContainerID+1, i.HostID, i.Size)
 	}
-	cmd := exec.Cmd{
-		Path: path,
-		Args: args,
-	}
+	cmd := exec.Command(path, args...)
 
 	if output, err := cmd.CombinedOutput(); err != nil {
 		logrus.Errorf("running `%s`: %s", strings.Join(args, " "), output)
