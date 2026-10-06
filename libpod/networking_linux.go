@@ -47,7 +47,7 @@ func (r *Runtime) configureNetNS(ctx context.Context, ctr *Container, ctrNS stri
 		return nil, nil
 	}
 
-	netOpts := ctr.getNetworkOptions(networks)
+	netOpts := ctr.getNetworkOptions(ctx, networks)
 	netStatus, err := r.setUpNetwork(ctrNS, netOpts)
 	if err != nil {
 		return nil, err
@@ -130,7 +130,7 @@ func (r *Runtime) teardownNetNS(ctx context.Context, ctr *Container) error {
 	// Do not check the error here, we want to always umount the netns
 	// This will ensure that the container interface will be deleted
 	// even when there is a network backend bug.
-	prevErr := r.teardownNetwork(ctr)
+	prevErr := r.teardownNetwork(ctx, ctr)
 
 	// First unmount the namespace
 	if err := netns.UnmountNS(ctr.state.NetNS); err != nil {
@@ -145,19 +145,19 @@ func (r *Runtime) teardownNetNS(ctx context.Context, ctr *Container) error {
 	return prevErr
 }
 
-func getContainerNetNS(ctr *Container) (string, *Container, error) {
+func getContainerNetNS(ctx context.Context, ctr *Container) (string, *Container, error) {
 	if ctr.state.NetNS != "" {
 		return ctr.state.NetNS, nil, nil
 	}
 	if ctr.config.NetNsCtr != "" {
-		c, err := ctr.runtime.GetContainer(ctr.config.NetNsCtr)
+		c, err := ctr.runtime.GetContainer(ctx, ctr.config.NetNsCtr)
 		if err != nil {
 			return "", nil, err
 		}
 		if err = c.syncContainer(); err != nil {
 			return "", c, err
 		}
-		netNs, c2, err := getContainerNetNS(c)
+		netNs, c2, err := getContainerNetNS(ctx, c)
 		if c2 != nil {
 			c = c2
 		}
@@ -167,10 +167,10 @@ func getContainerNetNS(ctr *Container) (string, *Container, error) {
 }
 
 // Returns a map of interface name to statistics for that interface.
-func getContainerNetIO(ctr *Container) (map[string]define.ContainerNetworkStats, error) {
+func getContainerNetIO(ctx context.Context, ctr *Container) (map[string]define.ContainerNetworkStats, error) {
 	perNetworkStats := make(map[string]define.ContainerNetworkStats)
 
-	netNSPath, _, netPathErr := getContainerNetNS(ctr)
+	netNSPath, _, netPathErr := getContainerNetNS(ctx, ctr)
 	if netPathErr != nil {
 		return nil, netPathErr
 	}

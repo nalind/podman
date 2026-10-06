@@ -30,7 +30,7 @@ var _ = Describe("Podman images", func() {
 		// Note: we need to start the registry **before** setting up
 		// the test. Otherwise, the registry is not reachable for
 		// currently unknown reasons.
-		registry, err = podmanRegistry.StartWithOptions(registryOptions)
+		registry, err = podmanRegistry.StartWithOptions(ctx, registryOptions)
 		Expect(err).ToNot(HaveOccurred())
 
 		bt = newBindingTest()
@@ -41,10 +41,10 @@ var _ = Describe("Podman images", func() {
 		Expect(err).ToNot(HaveOccurred())
 	})
 
-	AfterEach(func() {
+	AfterEach(func(ctx context.Context) {
 		s.Kill()
 		bt.cleanup()
-		err := registry.Stop()
+		err := registry.Stop(ctx)
 		Expect(err).ToNot(HaveOccurred())
 	})
 

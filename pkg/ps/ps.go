@@ -36,7 +36,7 @@ func GetContainerLists(ctx context.Context, runtime *libpod.Runtime, options ent
 	all := options.All || options.Last > 0
 	if len(options.Filters) > 0 {
 		for k, v := range options.Filters {
-			generatedFunc, err := filters.GenerateContainerFilterFuncs(k, v, runtime)
+			generatedFunc, err := filters.GenerateContainerFilterFuncs(ctx, k, v, runtime)
 			if err != nil && !options.External {
 				return nil, err
 			}
@@ -58,7 +58,7 @@ func GetContainerLists(ctx context.Context, runtime *libpod.Runtime, options ent
 		all = true
 	}
 	if !all {
-		runningOnly, err := filters.GenerateContainerFilterFuncs("status", []string{define.ContainerStateRunning.String()}, runtime)
+		runningOnly, err := filters.GenerateContainerFilterFuncs(ctx, "status", []string{define.ContainerStateRunning.String()}, runtime)
 		if err != nil {
 			return nil, err
 		}
@@ -72,7 +72,7 @@ func GetContainerLists(ctx context.Context, runtime *libpod.Runtime, options ent
 	// This may return slightly outdated states but that's acceptable for
 	// listing containers; any state is outdated the point a container lock
 	// gets released.
-	cons, err := runtime.GetContainers(true, filterFuncs...)
+	cons, err := runtime.GetContainers(ctx, true, filterFuncs...)
 	if err != nil {
 		return nil, err
 	}

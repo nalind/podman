@@ -39,7 +39,7 @@ func (r *Runtime) RenumberLocks(ctx context.Context) error {
 		return err
 	}
 
-	allCtrs, err := r.state.AllContainers(false)
+	allCtrs, err := r.state.AllContainers(ctx, false)
 	if err != nil {
 		return err
 	}

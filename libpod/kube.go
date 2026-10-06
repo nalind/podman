@@ -49,7 +49,7 @@ func (p *Pod) GenerateForKube(ctx context.Context, getService, podmanOnly bool) 
 		servicePorts []v1.ServicePort
 	)
 
-	allContainers, err := p.allContainers()
+	allContainers, err := p.allContainers(ctx)
 	if err != nil {
 		return nil, servicePorts, err
 	}
@@ -67,7 +67,7 @@ func (p *Pod) GenerateForKube(ctx context.Context, getService, podmanOnly bool) 
 	hostUsers := true
 	infraName := ""
 	if p.HasInfraContainer() {
-		infraContainer, err := p.getInfraContainer()
+		infraContainer, err := p.getInfraContainer(ctx)
 		if err != nil {
 			return nil, servicePorts, err
 		}
@@ -112,12 +112,12 @@ func (p *Pod) GenerateForKube(ctx context.Context, getService, podmanOnly bool) 
 	return pod, servicePorts, nil
 }
 
-func (p *Pod) getInfraContainer() (*Container, error) {
+func (p *Pod) getInfraContainer(ctx context.Context) (*Container, error) {
 	infraID, err := p.InfraContainerID()
 	if err != nil {
 		return nil, err
 	}
-	return p.runtime.GetContainer(infraID)
+	return p.runtime.GetContainer(ctx, infraID)
 }
 
 func GenerateForKubeDaemonSet(_ context.Context, pod *YAMLPod, options entities.GenerateKubeOptions) (*YAMLDaemonSet, error) {
@@ -627,8 +627,8 @@ func (p *Pod) podWithContainers(ctx context.Context, containers []*Container, po
 			if hostname == "" {
 				// Only set the hostname if it is not set to the truncated container ID, which we do by default if no
 				// hostname is specified for the container and if it is not set to the pod name.
-				if !strings.Contains(ctr.ID(), ctr.Hostname()) && ctr.Hostname() != p.Name() {
-					hostname = ctr.Hostname()
+				if !strings.Contains(ctr.ID(), ctr.Hostname(ctx)) && ctr.Hostname(ctx) != p.Name() {
+					hostname = ctr.Hostname(ctx)
 				}
 			}
 
@@ -775,8 +775,8 @@ func simplePodWithV1Containers(ctx context.Context, ctrs []*Container, getServic
 		if hostname == "" {
 			// Only set the hostname if it is not set to the truncated container ID, which we do by default if no
 			// hostname is specified for the container
-			if !strings.Contains(ctr.ID(), ctr.Hostname()) {
-				hostname = ctr.Hostname()
+			if !strings.Contains(ctr.ID(), ctr.Hostname(ctx)) {
+				hostname = ctr.Hostname(ctx)
 			}
 		}
 

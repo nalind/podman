@@ -34,12 +34,12 @@ func (r *Runtime) Migrate(ctx context.Context, newRuntime string, migrateDB bool
 		return define.ErrRuntimeStopped
 	}
 
-	runningContainers, err := r.GetRunningContainers()
+	runningContainers, err := r.GetRunningContainers(ctx)
 	if err != nil {
 		return err
 	}
 
-	allCtrs, err := r.state.AllContainers(false)
+	allCtrs, err := r.state.AllContainers(ctx, false)
 	if err != nil {
 		return err
 	}
@@ -183,7 +183,7 @@ func (r *Runtime) migrateDB(ctx context.Context) error {
 
 	// Containers must be done as a graph due to dependencies.
 	// The state will error if we add a container before its dependencies.
-	allCtrs, err := oldState.AllContainers(true)
+	allCtrs, err := oldState.AllContainers(ctx, true)
 	if err != nil {
 		return fmt.Errorf("retrieving containers from boltdb: %w", err)
 	}

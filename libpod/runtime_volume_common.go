@@ -393,7 +393,7 @@ func (r *Runtime) removeVolume(ctx context.Context, v *Volume, force bool, timeo
 
 		// We need to remove all containers using the volume
 		for _, dep := range deps {
-			ctr, err := r.state.Container(dep)
+			ctr, err := r.state.Container(ctx, dep)
 			if err != nil {
 				// If the container's removed, no point in
 				// erroring.

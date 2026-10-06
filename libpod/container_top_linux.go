@@ -239,7 +239,7 @@ func (c *Container) Top(ctx context.Context, descriptors []string) ([]string, er
 	if c.config.Spec.Process.Capabilities != nil &&
 		!slices.Contains(c.config.Spec.Process.Capabilities.Effective, "CAP_SYS_PTRACE") {
 		var retry bool
-		output, retry, err = c.execPS(psDescriptors)
+		output, retry, err = c.execPS(ctx, psDescriptors)
 		if err != nil {
 			if !retry {
 				return nil, err
@@ -298,7 +298,7 @@ func (c *Container) GetContainerPidInformation(descriptors []string) ([]string, 
 }
 
 // execute ps(1) from the host within the container pid namespace
-func (c *Container) execPS(psArgs []string) ([]string, bool, error) {
+func (c *Container) execPS(ctx context.Context, psArgs []string) ([]string, bool, error) {
 	rPipe, wPipe, err := os.Pipe()
 	if err != nil {
 		return nil, false, err
@@ -332,7 +332,7 @@ func (c *Container) execPS(psArgs []string) ([]string, bool, error) {
 
 	args := append([]string{podmanTopCommand, strconv.Itoa(c.state.PID), userns, psPath}, psArgs...)
 
-	cmd := reexec.Command(args...)
+	cmd := reexec.CommandContext(ctx, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Unshareflags: unix.CLONE_NEWNS,
 	}

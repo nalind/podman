@@ -138,7 +138,7 @@ func GetContainer(w http.ResponseWriter, r *http.Request) {
 	}
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 	name := utils.GetName(r)
-	container, err := runtime.LookupContainer(name)
+	container, err := runtime.LookupContainer(r.Context(), name)
 	if err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return
@@ -163,7 +163,7 @@ func WaitContainer(w http.ResponseWriter, r *http.Request) {
 func UnmountContainer(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 	name := utils.GetName(r)
-	conn, err := runtime.LookupContainer(name)
+	conn, err := runtime.LookupContainer(r.Context(), name)
 	if err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return
@@ -180,7 +180,7 @@ func UnmountContainer(w http.ResponseWriter, r *http.Request) {
 func MountContainer(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 	name := utils.GetName(r)
-	conn, err := runtime.LookupContainer(name)
+	conn, err := runtime.LookupContainer(r.Context(), name)
 	if err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return
@@ -196,7 +196,7 @@ func MountContainer(w http.ResponseWriter, r *http.Request) {
 func ShowMountedContainers(w http.ResponseWriter, r *http.Request) {
 	response := make(map[string]string)
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	conns, err := runtime.GetAllContainers()
+	conns, err := runtime.GetAllContainers(r.Context())
 	if err != nil {
 		utils.InternalServerError(w, err)
 		return
@@ -241,7 +241,7 @@ func Checkpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := utils.GetName(r)
-	if _, err := runtime.LookupContainer(name); err != nil {
+	if _, err := runtime.LookupContainer(r.Context(), name); err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return
 	}
@@ -358,7 +358,7 @@ func Restore(w http.ResponseWriter, r *http.Request) {
 		options.Import = t.Name()
 	} else {
 		name := utils.GetName(r)
-		if _, err := runtime.LookupContainer(name); err != nil {
+		if _, err := runtime.LookupContainer(r.Context(), name); err != nil {
 			// If container was not found, check if this is a checkpoint image
 			ir := abi.ImageEngine{Libpod: runtime}
 			report, err := ir.Exists(r.Context(), name)
@@ -393,7 +393,7 @@ func Restore(w http.ResponseWriter, r *http.Request) {
 func InitContainer(w http.ResponseWriter, r *http.Request) {
 	name := utils.GetName(r)
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
-	ctr, err := runtime.LookupContainer(name)
+	ctr, err := runtime.LookupContainer(r.Context(), name)
 	if err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return
@@ -474,7 +474,7 @@ func UpdateContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctr, err := runtime.LookupContainer(name)
+	ctr, err := runtime.LookupContainer(r.Context(), name)
 	if err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return

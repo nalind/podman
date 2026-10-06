@@ -507,7 +507,7 @@ func makeRuntime(ctx context.Context, runtime *Runtime) (retErr error) {
 
 	// Initialize remaining OCI runtimes
 	for name, paths := range runtime.config.Engine.OCIRuntimes {
-		ociRuntime, err := newConmonOCIRuntime(name, paths, runtime.conmonPath, runtime.runtimeFlags, runtime.config)
+		ociRuntime, err := newConmonOCIRuntime(ctx, name, paths, runtime.conmonPath, runtime.runtimeFlags, runtime.config)
 		if err != nil {
 			// Don't fatally error.
 			// This will allow us to ship configs including optional
@@ -525,7 +525,7 @@ func makeRuntime(ctx context.Context, runtime *Runtime) (retErr error) {
 		// If the string starts with / it's a path to a runtime
 		// executable.
 		if strings.HasPrefix(runtime.config.Engine.OCIRuntime, "/") {
-			ociRuntime, err := newConmonOCIRuntime(runtime.config.Engine.OCIRuntime, []string{runtime.config.Engine.OCIRuntime}, runtime.conmonPath, runtime.runtimeFlags, runtime.config)
+			ociRuntime, err := newConmonOCIRuntime(ctx, runtime.config.Engine.OCIRuntime, []string{runtime.config.Engine.OCIRuntime}, runtime.conmonPath, runtime.runtimeFlags, runtime.config)
 			if err != nil {
 				return err
 			}
@@ -621,7 +621,7 @@ func makeRuntime(ctx context.Context, runtime *Runtime) (retErr error) {
 				return fmt.Errorf("could not create rootless state directory: %w", err)
 			}
 
-			became, ret, err := rootless.BecomeRootInUserNS(stateDir)
+			became, ret, err := rootless.BecomeRootInUserNS(ctx, stateDir)
 			if err != nil {
 				return err
 			}
@@ -836,7 +836,7 @@ func (r *Runtime) Shutdown(ctx context.Context, force bool) error {
 
 	// Shutdown all containers if --force is given
 	if force {
-		ctrs, err := r.state.AllContainers(false)
+		ctrs, err := r.state.AllContainers(ctx, false)
 		if err != nil {
 			logrus.Errorf("Retrieving containers from database: %v", err)
 		} else {
@@ -912,7 +912,7 @@ func (r *Runtime) refresh(ctx context.Context, alivePath string) error {
 	// Next refresh the state of all containers to recreate dirs and
 	// namespaces, and all the pods to recreate cgroups.
 	// Containers, pods, and volumes must also reacquire their locks.
-	ctrs, err := r.state.AllContainers(false)
+	ctrs, err := r.state.AllContainers(ctx, false)
 	if err != nil {
 		return fmt.Errorf("retrieving all containers from state: %w", err)
 	}
@@ -981,11 +981,11 @@ func (r *Runtime) Info(ctx context.Context) (*define.Info, error) {
 }
 
 // generateName generates a unique name for a container or pod.
-func (r *Runtime) generateName() (string, error) {
+func (r *Runtime) generateName(ctx context.Context) (string, error) {
 	for {
 		name := namesgenerator.GetRandomName(0)
 		// Make sure container with this name does not exist
-		if _, err := r.state.LookupContainer(name); err == nil {
+		if _, err := r.state.LookupContainer(ctx, name); err == nil {
 			continue
 		} else if !errors.Is(err, define.ErrNoSuchCtr) {
 			return "", err
@@ -1267,7 +1267,7 @@ func (r *Runtime) LockConflicts(ctx context.Context) (map[uint32][]string, []uin
 	// Make an internal map to store what lock is associated with what
 	locksInUse := make(map[uint32][]string)
 
-	ctrs, err := r.state.AllContainers(false)
+	ctrs, err := r.state.AllContainers(ctx, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1383,7 +1383,7 @@ func (r *Runtime) PruneBuildContainers() ([]*reports.PruneReport, error) {
 
 // SystemCheck checks our storage for consistency, and depending on the options
 // specified, will attempt to remove anything which fails consistency checks.
-func (r *Runtime) SystemCheck(options entities.SystemCheckOptions) (entities.SystemCheckReport, error) {
+func (r *Runtime) SystemCheck(ctx context.Context, options entities.SystemCheckOptions) (entities.SystemCheckReport, error) {
 	what := storage.CheckEverything()
 	if options.Quick {
 		// Turn off checking layer digests and layer contents to do quick check.
@@ -1458,7 +1458,7 @@ func (r *Runtime) SystemCheck(options entities.SystemCheckOptions) (entities.Sys
 		// build a list of the containers that we claim as ours that we
 		// expect to be removing in a bit
 		for containerID := range storageReport.Containers {
-			ctr, lookupErr := r.state.LookupContainer(containerID)
+			ctr, lookupErr := r.state.LookupContainer(ctx, containerID)
 			if lookupErr != nil {
 				// we're about to remove it, so it's okay that
 				// it isn't even one of ours

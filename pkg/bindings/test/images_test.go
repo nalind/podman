@@ -390,7 +390,7 @@ var _ = Describe("Podman images", func() {
 		registryOptions := &podmanRegistry.Options{
 			PodmanPath: getPodmanBinary(),
 		}
-		registry, err := podmanRegistry.StartWithOptions(registryOptions)
+		registry, err := podmanRegistry.StartWithOptions(bt.conn, registryOptions)
 		Expect(err).ToNot(HaveOccurred())
 
 		var writer bytes.Buffer

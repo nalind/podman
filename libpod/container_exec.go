@@ -651,7 +651,7 @@ func (c *Container) ExecCleanup(sessionID string) error {
 
 // ExecRemove removes an exec session in the container.
 // If force is given, the session will be stopped first if it is running.
-func (c *Container) ExecRemove(sessionID string, force bool) error {
+func (c *Container) ExecRemove(ctx context.Context, sessionID string, force bool) error {
 	if !c.batched {
 		c.lock.Lock()
 		defer c.lock.Unlock()
@@ -688,7 +688,7 @@ func (c *Container) ExecRemove(sessionID string, force bool) error {
 		}
 
 		// Stop the session
-		if err := c.ociRuntime.ExecStopContainer(c, session.ID(), c.StopTimeout()); err != nil {
+		if err := c.ociRuntime.ExecStopContainer(ctx, c, session.ID(), c.StopTimeout()); err != nil {
 			return err
 		}
 
@@ -840,7 +840,7 @@ func (c *Container) exec(ctx context.Context, config *ExecConfig, streams *defin
 	cleanup := true
 	defer func() {
 		if cleanup {
-			if err := c.ExecRemove(sessionID, false); err != nil {
+			if err := c.ExecRemove(ctx, sessionID, false); err != nil {
 				if retErr == nil && !errors.Is(err, define.ErrNoSuchExecSession) {
 					exitCode = -1
 					retErr = err
@@ -1094,14 +1094,14 @@ func (c *Container) getActiveExecSessions() ([]string, error) {
 }
 
 // removeAllExecSessions stops and removes all the container's exec sessions
-func (c *Container) removeAllExecSessions() error {
+func (c *Container) removeAllExecSessions(ctx context.Context) error {
 	knownSessions := c.getKnownExecSessions()
 
 	logrus.Debugf("Removing all exec sessions for container %s", c.ID())
 
 	var lastErr error
 	for _, id := range knownSessions {
-		if err := c.ociRuntime.ExecStopContainer(c, id, c.StopTimeout()); err != nil {
+		if err := c.ociRuntime.ExecStopContainer(ctx, c, id, c.StopTimeout()); err != nil {
 			if lastErr != nil {
 				logrus.Errorf("Stopping container %s exec sessions: %v", c.ID(), lastErr)
 			}
@@ -1275,7 +1275,7 @@ func (c *Container) execLightweight(ctx context.Context, config *ExecConfig, str
 				return -1, fmt.Errorf("container %s light exec session with pid: %d error: %w", c.ID(), pid, err)
 			}
 		case <-time.After(timeout):
-			if err := c.ociRuntime.ExecStopContainer(c, session.ID(), 0); err != nil {
+			if err := c.ociRuntime.ExecStopContainer(ctx, c, session.ID(), 0); err != nil {
 				return -1, err
 			}
 			return -1, fmt.Errorf("%w of %s", define.ErrHealthCheckTimeout, timeout.String())

@@ -19,7 +19,7 @@ import (
 
 // startInitContainers starts a pod's init containers.
 func (p *Pod) startInitContainers(ctx context.Context) error {
-	initCtrs, err := p.initContainers()
+	initCtrs, err := p.initContainers(ctx)
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func (p *Pod) Start(ctx context.Context) (map[string]error, error) {
 	if err := p.startInitContainers(ctx); err != nil {
 		return nil, err
 	}
-	allCtrs, err := p.runtime.state.PodContainers(p)
+	allCtrs, err := p.runtime.state.PodContainers(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +152,7 @@ func (p *Pod) stopWithTimeout(ctx context.Context, cleanup bool, timeout int) (m
 		return nil, define.ErrPodRemoved
 	}
 
-	allCtrs, err := p.runtime.state.PodContainers(p)
+	allCtrs, err := p.runtime.state.PodContainers(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -223,14 +223,14 @@ func (p *Pod) stopIfOnlyInfraRemains(ctx context.Context, ignoreID string) error
 	infraID := ""
 
 	if p.HasInfraContainer() {
-		infra, err := p.infraContainer()
+		infra, err := p.infraContainer(ctx)
 		if err != nil {
 			return err
 		}
 		infraID = infra.ID()
 	}
 
-	allCtrs, err := p.runtime.state.PodContainers(p)
+	allCtrs, err := p.runtime.state.PodContainers(ctx, p)
 	if err != nil {
 		return err
 	}
@@ -281,7 +281,7 @@ func (p *Pod) Cleanup(ctx context.Context) (map[string]error, error) {
 		return nil, define.ErrPodRemoved
 	}
 
-	allCtrs, err := p.runtime.state.PodContainers(p)
+	allCtrs, err := p.runtime.state.PodContainers(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +342,7 @@ func (p *Pod) Pause(ctx context.Context) (map[string]error, error) {
 		return nil, define.ErrPodRemoved
 	}
 
-	allCtrs, err := p.runtime.state.PodContainers(p)
+	allCtrs, err := p.runtime.state.PodContainers(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +398,7 @@ func (p *Pod) Unpause(ctx context.Context) (map[string]error, error) {
 		return nil, define.ErrPodRemoved
 	}
 
-	allCtrs, err := p.runtime.state.PodContainers(p)
+	allCtrs, err := p.runtime.state.PodContainers(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -459,7 +459,7 @@ func (p *Pod) Restart(ctx context.Context) (map[string]error, error) {
 		return nil, err
 	}
 
-	allCtrs, err := p.runtime.state.PodContainers(p)
+	allCtrs, err := p.runtime.state.PodContainers(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -511,7 +511,7 @@ func (p *Pod) Kill(ctx context.Context, signal uint) (map[string]error, error) {
 		return nil, define.ErrPodRemoved
 	}
 
-	allCtrs, err := p.runtime.state.PodContainers(p)
+	allCtrs, err := p.runtime.state.PodContainers(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -556,14 +556,14 @@ func (p *Pod) Kill(ctx context.Context, signal uint) (map[string]error, error) {
 
 // Status gets the status of all containers in the pod.
 // Returns a map of Container ID to Container Status.
-func (p *Pod) Status() (map[string]define.ContainerStatus, error) {
+func (p *Pod) Status(ctx context.Context) (map[string]define.ContainerStatus, error) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
 	if !p.valid {
 		return nil, define.ErrPodRemoved
 	}
-	allCtrs, err := p.runtime.state.PodContainers(p)
+	allCtrs, err := p.runtime.state.PodContainers(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -599,7 +599,7 @@ func (p *Pod) Inspect(ctx context.Context) (*define.InspectPodData, error) {
 		return nil, err
 	}
 
-	containers, err := p.runtime.state.PodContainers(p)
+	containers, err := p.runtime.state.PodContainers(ctx, p)
 	if err != nil {
 		return nil, err
 	}
@@ -652,21 +652,21 @@ func (p *Pod) Inspect(ctx context.Context) (*define.InspectPodData, error) {
 	var devices []define.InspectDevice
 	var infraSecurity []string
 	if p.state.InfraContainerID != "" {
-		infra, err := p.runtime.GetContainer(p.state.InfraContainerID)
+		infra, err := p.runtime.GetContainer(ctx, p.state.InfraContainerID)
 		if err != nil {
 			return nil, err
 		}
 		infraConfig = new(define.InspectPodInfraConfig)
-		infraConfig.HostNetwork = p.NetworkMode() == "host"
+		infraConfig.HostNetwork = p.NetworkMode(ctx) == "host"
 		infraConfig.NoManageResolvConf = infra.config.UseImageResolvConf
 		infraConfig.NoManageHostname = infra.config.UseImageHostname
 		infraConfig.NoManageHosts = infra.config.UseImageHosts
 		infraConfig.CPUPeriod = p.CPUPeriod()
 		infraConfig.CPUQuota = p.CPUQuota()
 		infraConfig.CPUSetCPUs = p.ResourceLim().CPU.Cpus
-		infraConfig.PidNS = p.NamespaceMode(specs.PIDNamespace)
-		infraConfig.UserNS = p.NamespaceMode(specs.UserNamespace)
-		infraConfig.UtsNS = p.NamespaceMode(specs.UTSNamespace)
+		infraConfig.PidNS = p.NamespaceMode(ctx, specs.PIDNamespace)
+		infraConfig.UserNS = p.NamespaceMode(ctx, specs.UserNamespace)
+		infraConfig.UtsNS = p.NamespaceMode(ctx, specs.UTSNamespace)
 		namedVolumes, mounts := infra.SortUserVolumes(infra.config.Spec)
 		inspectMounts, err = infra.GetMounts(ctx, namedVolumes, infra.config.ImageVolumes, mounts)
 		infraSecurity = infra.GetSecurityOptions()
@@ -737,7 +737,7 @@ func (p *Pod) Inspect(ctx context.Context) (*define.InspectPodData, error) {
 		Mounts:              inspectMounts,
 		Devices:             devices,
 		BlkioDeviceReadBps:  p.BlkiThrottleReadBps(),
-		VolumesFrom:         p.VolumesFrom(),
+		VolumesFrom:         p.VolumesFrom(ctx),
 		SecurityOpts:        infraSecurity,
 		MemorySwap:          p.MemorySwap(),
 		BlkioWeight:         p.BlkioWeight(),

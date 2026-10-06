@@ -243,7 +243,7 @@ func startNode(ctx context.Context, node *containerNode, setError bool, ctrError
 	// But they could have died before we got here
 	// Does not require that the container be locked, we only need to lock
 	// the dependencies
-	depsStopped, err := node.container.checkDependenciesRunning()
+	depsStopped, err := node.container.checkDependenciesRunning(ctx)
 	if err != nil {
 		ctrErrors[node.id] = err
 		ctrErrored = true

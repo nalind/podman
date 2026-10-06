@@ -31,11 +31,11 @@ type OCIRuntime interface { //nolint:interfacebloat
 	// is true. In all other cases the returned int64 is 0.
 	CreateContainer(ctx context.Context, ctr *Container, restoreOptions *ContainerCheckpointOptions) (int64, error)
 	// StartContainer starts the given container.
-	StartContainer(ctr *Container) error
+	StartContainer(ctx context.Context, ctr *Container) error
 	// KillContainer sends the given signal to the given container.
 	// If all is set, all processes in the container will be signalled;
 	// otherwise, only init will be signalled.
-	KillContainer(ctr *Container, signal uint, all bool) error
+	KillContainer(ctx context.Context, ctr *Container, signal uint, all bool) error
 	// StopContainer stops the given container.
 	// The container's stop signal (or SIGTERM if unspecified) will be sent
 	// first.
@@ -45,13 +45,13 @@ type OCIRuntime interface { //nolint:interfacebloat
 	// If all is set, we will attempt to use the --all flag will `kill` in
 	// the OCI runtime to kill all processes in the container, including
 	// exec sessions. This is only supported if the container has cgroups.
-	StopContainer(ctr *Container, timeout uint, all bool) error
+	StopContainer(ctx context.Context, ctr *Container, timeout uint, all bool) error
 	// DeleteContainer deletes the given container from the OCI runtime.
-	DeleteContainer(ctr *Container) error
+	DeleteContainer(ctx context.Context, ctr *Container) error
 	// PauseContainer pauses the given container.
-	PauseContainer(ctr *Container) error
+	PauseContainer(ctx context.Context, ctr *Container) error
 	// UnpauseContainer unpauses the given container.
-	UnpauseContainer(ctr *Container) error
+	UnpauseContainer(ctx context.Context, ctr *Container) error
 
 	// Attach to a container.
 	Attach(ctx context.Context, ctr *Container, params *AttachOptions) error
@@ -99,7 +99,7 @@ type OCIRuntime interface { //nolint:interfacebloat
 	// SIGTERM with be sent initially, then SIGKILL after the given timeout.
 	// If timeout is 0, SIGKILL will be sent immediately, and SIGTERM will
 	// be omitted.
-	ExecStopContainer(ctr *Container, sessionID string, timeout uint) error
+	ExecStopContainer(ctx context.Context, ctr *Container, sessionID string, timeout uint) error
 	// ExecUpdateStatus checks the status of a given exec session.
 	// Returns true if the session is still running, or false if it exited.
 	ExecUpdateStatus(ctr *Container, sessionID string) (bool, error)
@@ -110,7 +110,7 @@ type OCIRuntime interface { //nolint:interfacebloat
 	// error. If CheckpointOptions.PrintStats is true the first return parameter
 	// contains the number of microseconds the runtime needed to checkpoint
 	// the given container.
-	CheckpointContainer(ctr *Container, options ContainerCheckpointOptions) (int64, error)
+	CheckpointContainer(ctx context.Context, ctr *Container, options ContainerCheckpointOptions) (int64, error)
 
 	// CheckConmonRunning verifies that the given container's Conmon
 	// instance is still running. Runtimes without Conmon, or systems where
@@ -121,7 +121,7 @@ type OCIRuntime interface { //nolint:interfacebloat
 
 	// SupportsCheckpoint returns whether this OCI runtime
 	// implementation supports the CheckpointContainer() operation.
-	SupportsCheckpoint() bool
+	SupportsCheckpoint(ctx context.Context) bool
 	// SupportsJSONErrors is whether the runtime can return JSON-formatted
 	// error messages.
 	SupportsJSONErrors() bool
@@ -163,14 +163,14 @@ type OCIRuntime interface { //nolint:interfacebloat
 	PersistDirectoryPath(ctr *Container) (string, error)
 
 	// RuntimeInfo returns verbose information about the runtime.
-	RuntimeInfo() (*define.ConmonInfo, *define.OCIRuntimeInfo, error)
+	RuntimeInfo(ctx context.Context) (*define.ConmonInfo, *define.OCIRuntimeInfo, error)
 
 	// RuntimeFeatures returns the raw output of the runtime's "features"
 	// command. It returns an empty string if not supported.
 	RuntimeFeatures() string
 
 	// UpdateContainer updates the given container's cgroup configuration.
-	UpdateContainer(ctr *Container, res *specs.LinuxResources) error
+	UpdateContainer(ctx context.Context, ctr *Container, res *specs.LinuxResources) error
 }
 
 // AttachOptions are options used when attached to a container or an exec

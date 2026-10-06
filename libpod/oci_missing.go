@@ -78,12 +78,12 @@ func (r *MissingRuntime) CreateContainer(_ context.Context, _ *Container, _ *Con
 }
 
 // StartContainer is not available as the runtime is missing
-func (r *MissingRuntime) StartContainer(_ *Container) error {
+func (r *MissingRuntime) StartContainer(_ context.Context, _ *Container) error {
 	return r.printError()
 }
 
 // UpdateContainer is not available as the runtime is missing
-func (r *MissingRuntime) UpdateContainer(_ *Container, _ *spec.LinuxResources) error {
+func (r *MissingRuntime) UpdateContainer(_ context.Context, _ *Container, _ *spec.LinuxResources) error {
 	return r.printError()
 }
 
@@ -91,27 +91,27 @@ func (r *MissingRuntime) UpdateContainer(_ *Container, _ *spec.LinuxResources) e
 // TODO: We could attempt to unix.Kill() the PID as recorded in the state if we
 // really want to smooth things out? Won't be perfect, but if the container has
 // a PID namespace it could be enough?
-func (r *MissingRuntime) KillContainer(_ *Container, _ uint, _ bool) error {
+func (r *MissingRuntime) KillContainer(_ context.Context, _ *Container, _ uint, _ bool) error {
 	return r.printError()
 }
 
 // StopContainer is not available as the runtime is missing
-func (r *MissingRuntime) StopContainer(_ *Container, _ uint, _ bool) error {
+func (r *MissingRuntime) StopContainer(_ context.Context, _ *Container, _ uint, _ bool) error {
 	return r.printError()
 }
 
 // DeleteContainer is not available as the runtime is missing
-func (r *MissingRuntime) DeleteContainer(_ *Container) error {
+func (r *MissingRuntime) DeleteContainer(_ context.Context, _ *Container) error {
 	return r.printError()
 }
 
 // PauseContainer is not available as the runtime is missing
-func (r *MissingRuntime) PauseContainer(_ *Container) error {
+func (r *MissingRuntime) PauseContainer(_ context.Context, _ *Container) error {
 	return r.printError()
 }
 
 // UnpauseContainer is not available as the runtime is missing
-func (r *MissingRuntime) UnpauseContainer(_ *Container) error {
+func (r *MissingRuntime) UnpauseContainer(_ context.Context, _ *Container) error {
 	return r.printError()
 }
 
@@ -156,7 +156,7 @@ func (r *MissingRuntime) ExecAttachResize(_ context.Context, _ *Container, _ str
 // TODO: We can also investigate using unix.Kill() on the PID of the exec
 // session here if we want to make stopping containers possible. Won't be
 // perfect, though.
-func (r *MissingRuntime) ExecStopContainer(_ *Container, _ string, _ uint) error {
+func (r *MissingRuntime) ExecStopContainer(_ context.Context, _ *Container, _ string, _ uint) error {
 	return r.printError()
 }
 
@@ -166,7 +166,7 @@ func (r *MissingRuntime) ExecUpdateStatus(_ *Container, _ string) (bool, error) 
 }
 
 // CheckpointContainer is not available as the runtime is missing
-func (r *MissingRuntime) CheckpointContainer(_ *Container, _ ContainerCheckpointOptions) (int64, error) {
+func (r *MissingRuntime) CheckpointContainer(_ context.Context, _ *Container, _ ContainerCheckpointOptions) (int64, error) {
 	return 0, r.printError()
 }
 
@@ -176,7 +176,7 @@ func (r *MissingRuntime) CheckConmonRunning(_ *Container) (bool, error) {
 }
 
 // SupportsCheckpoint returns false as checkpointing requires a working runtime
-func (r *MissingRuntime) SupportsCheckpoint() bool {
+func (r *MissingRuntime) SupportsCheckpoint(context.Context) bool {
 	return false
 }
 
@@ -235,7 +235,7 @@ func (r *MissingRuntime) PersistDirectoryPath(ctr *Container) (string, error) {
 }
 
 // RuntimeInfo returns information on the missing runtime
-func (r *MissingRuntime) RuntimeInfo() (*define.ConmonInfo, *define.OCIRuntimeInfo, error) {
+func (r *MissingRuntime) RuntimeInfo(context.Context) (*define.ConmonInfo, *define.OCIRuntimeInfo, error) {
 	ocirt := define.OCIRuntimeInfo{
 		Name:    r.name,
 		Path:    "missing",

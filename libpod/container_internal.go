@@ -279,7 +279,7 @@ func (c *Container) handleRestartPolicy(ctx context.Context) (_ bool, retErr err
 	logrus.Debugf("Restarting container %s due to restart policy %s", c.ID(), c.config.RestartPolicy)
 
 	// Need to check if dependencies are alive.
-	if err := c.checkDependenciesAndHandleError(); err != nil {
+	if err := c.checkDependenciesAndHandleError(ctx); err != nil {
 		return false, err
 	}
 
@@ -512,7 +512,7 @@ func (c *Container) setupStorage(ctx context.Context) error {
 	var containerInfoErr error
 	for {
 		if generateName {
-			name, err := c.runtime.generateName()
+			name, err := c.runtime.generateName(ctx)
 			if err != nil {
 				return err
 			}
@@ -526,7 +526,7 @@ func (c *Container) setupStorage(ctx context.Context) error {
 	}
 	if containerInfoErr != nil {
 		if errors.Is(containerInfoErr, storage.ErrDuplicateName) {
-			if _, err := c.runtime.LookupContainer(c.config.Name); errors.Is(err, define.ErrNoSuchCtr) {
+			if _, err := c.runtime.LookupContainer(ctx, c.config.Name); errors.Is(err, define.ErrNoSuchCtr) {
 				return fmt.Errorf("creating container storage: %w by an external entity", containerInfoErr)
 			}
 		}
@@ -832,7 +832,7 @@ func (c *Container) prepareToStart(ctx context.Context, recursive bool) (retErr 
 	}
 
 	if !recursive {
-		if err := c.checkDependenciesAndHandleError(); err != nil {
+		if err := c.checkDependenciesAndHandleError(ctx); err != nil {
 			return err
 		}
 	} else {
@@ -868,8 +868,8 @@ func (c *Container) prepareToStart(ctx context.Context, recursive bool) (retErr 
 }
 
 // checks dependencies are running and prints a helpful message
-func (c *Container) checkDependenciesAndHandleError() error {
-	notRunning, err := c.checkDependenciesRunning()
+func (c *Container) checkDependenciesAndHandleError(ctx context.Context) error {
+	notRunning, err := c.checkDependenciesRunning(ctx)
 	if err != nil {
 		return fmt.Errorf("checking dependencies for container %s: %w", c.ID(), err)
 	}
@@ -889,7 +889,7 @@ func (c *Container) startDependencies(ctx context.Context) error {
 	}
 
 	depVisitedCtrs := make(map[string]*Container)
-	if err := c.getAllDependencies(depVisitedCtrs); err != nil {
+	if err := c.getAllDependencies(ctx, depVisitedCtrs); err != nil {
 		return fmt.Errorf("starting dependency for container %s: %w", c.ID(), err)
 	}
 
@@ -944,19 +944,19 @@ func (c *Container) startDependencies(ctx context.Context) error {
 // Note: this function is currently meant as a robust solution to a narrow problem: start an infra-container when
 // a container in the pod is run. It has not been tested for performance past one level, so expansion of recursive start
 // must be tested first.
-func (c *Container) getAllDependencies(visited map[string]*Container) error {
+func (c *Container) getAllDependencies(ctx context.Context, visited map[string]*Container) error {
 	depIDs := c.Dependencies()
 	if len(depIDs) == 0 {
 		return nil
 	}
 	for _, depID := range depIDs {
 		if _, ok := visited[depID]; !ok {
-			dep, err := c.runtime.state.Container(depID)
+			dep, err := c.runtime.state.Container(ctx, depID)
 			if err != nil {
 				return err
 			}
 			visited[depID] = dep
-			if err := dep.getAllDependencies(visited); err != nil {
+			if err := dep.getAllDependencies(ctx, visited); err != nil {
 				return err
 			}
 		}
@@ -966,7 +966,7 @@ func (c *Container) getAllDependencies(visited map[string]*Container) error {
 
 // Check if a container's dependencies are running
 // Returns a []string containing the IDs of dependencies that are not running
-func (c *Container) checkDependenciesRunning() ([]string, error) {
+func (c *Container) checkDependenciesRunning(ctx context.Context) ([]string, error) {
 	deps := c.Dependencies()
 	notRunning := []string{}
 
@@ -975,7 +975,7 @@ func (c *Container) checkDependenciesRunning() ([]string, error) {
 	depCtrs := make(map[string]*Container, len(deps))
 	for _, dep := range deps {
 		// Get the dependency container
-		depCtr, err := c.runtime.state.Container(dep)
+		depCtr, err := c.runtime.state.Container(ctx, dep)
 		if err != nil {
 			return nil, fmt.Errorf("retrieving dependency %s of container %s from state: %w", dep, c.ID(), err)
 		}
@@ -1296,7 +1296,7 @@ func (c *Container) start(ctx context.Context) error {
 		logrus.Debugf("Starting container %s with command %v", c.ID(), c.config.Spec.Process.Args)
 	}
 
-	if err := c.ociRuntime.StartContainer(c); err != nil {
+	if err := c.ociRuntime.StartContainer(ctx, c); err != nil {
 		return err
 	}
 	logrus.Debugf("Started container %s", c.ID())
@@ -1490,7 +1490,7 @@ func (c *Container) stopInternal(ctx context.Context, timeout uint, stoppedByUse
 		c.lock.Unlock()
 	}
 
-	stopErr := c.ociRuntime.StopContainer(c, timeout, all)
+	stopErr := c.ociRuntime.StopContainer(ctx, c, timeout, all)
 
 	if !c.batched {
 		c.lock.Lock()
@@ -1559,7 +1559,7 @@ func (c *Container) waitForConmonToExitAndSave(ctx context.Context) error {
 				// this to get the real exit code... But I'm not
 				// that dedicated.
 				all := c.stopWithAll()
-				if err := c.ociRuntime.StopContainer(c, 0, all); err != nil {
+				if err := c.ociRuntime.StopContainer(ctx, c, 0, all); err != nil {
 					logrus.Errorf("Error stopping container %s after Conmon exited prematurely: %v", c.ID(), err)
 				}
 			}
@@ -1623,7 +1623,7 @@ func (c *Container) pause(ctx context.Context) error {
 		}
 	}
 
-	if err := c.ociRuntime.PauseContainer(c); err != nil {
+	if err := c.ociRuntime.PauseContainer(ctx, c); err != nil {
 		// TODO when using docker-py there is some sort of race/incompatibility here
 		return err
 	}
@@ -1642,7 +1642,7 @@ func (c *Container) unpause(ctx context.Context) error {
 		return fmt.Errorf("cannot unpause without using Cgroups: %w", define.ErrNoCgroups)
 	}
 
-	if err := c.ociRuntime.UnpauseContainer(c); err != nil {
+	if err := c.ociRuntime.UnpauseContainer(ctx, c); err != nil {
 		// TODO when using docker-py there is some sort of race/incompatibility here
 		return err
 	}
@@ -2206,7 +2206,7 @@ func (c *Container) fullCleanup(ctx context.Context, onlyStopped bool) error {
 	}
 	if !hasPidNs {
 		// do not fail on errors
-		_ = c.ociRuntime.KillContainer(c, uint(unix.SIGKILL), true)
+		_ = c.ociRuntime.KillContainer(ctx, c, uint(unix.SIGKILL), true)
 	}
 
 	// Check for running exec sessions
@@ -2370,7 +2370,7 @@ func (c *Container) stopPodIfNeeded(ctx context.Context) error {
 // delete deletes the container and runs any configured poststop
 // hooks.
 func (c *Container) delete(ctx context.Context) error {
-	if err := c.ociRuntime.DeleteContainer(c); err != nil {
+	if err := c.ociRuntime.DeleteContainer(ctx, c); err != nil {
 		return fmt.Errorf("removing container %s from runtime: %w", c.ID(), err)
 	}
 
@@ -2837,7 +2837,7 @@ func (c *Container) extractSecretToCtrStorage(secr *ContainerSecret) error {
 
 // Update a container's resources or restart policy after creation.
 // At least one of resources or restartPolicy must not be nil.
-func (c *Container) update(updateOptions *entities.ContainerUpdateOptions) error {
+func (c *Container) update(ctx context.Context, updateOptions *entities.ContainerUpdateOptions) error {
 	if updateOptions.Resources == nil && updateOptions.RestartPolicy == nil {
 		return fmt.Errorf("must provide at least one of resources and restartPolicy to update a container: %w", define.ErrInvalidArg)
 	}
@@ -2938,7 +2938,7 @@ func (c *Container) update(updateOptions *entities.ContainerUpdateOptions) error
 			logrus.Errorf("Unable to update container %s OCI spec - `podman inspect` may not be accurate until container is restarted: %v", c.ID(), err)
 		}
 
-		if err := c.ociRuntime.UpdateContainer(c, updateOptions.Resources); err != nil {
+		if err := c.ociRuntime.UpdateContainer(ctx, c, updateOptions.Resources); err != nil {
 			return err
 		}
 	}

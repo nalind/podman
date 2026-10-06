@@ -23,7 +23,7 @@ import (
 
 // setLabelOpts sets the label options of the SecurityConfig according to the
 // input.
-func setLabelOpts(s *specgen.SpecGenerator, runtime *libpod.Runtime, pidConfig specgen.Namespace, ipcConfig specgen.Namespace) error {
+func setLabelOpts(ctx context.Context, s *specgen.SpecGenerator, runtime *libpod.Runtime, pidConfig specgen.Namespace, ipcConfig specgen.Namespace) error {
 	if !runtime.EnableLabeling() || s.IsPrivileged() {
 		s.SelinuxOpts = selinux.DisableSecOpt()
 		return nil
@@ -33,7 +33,7 @@ func setLabelOpts(s *specgen.SpecGenerator, runtime *libpod.Runtime, pidConfig s
 	if pidConfig.IsHost() {
 		labelOpts = append(labelOpts, selinux.DisableSecOpt()...)
 	} else if pidConfig.IsContainer() {
-		ctr, err := runtime.LookupContainer(pidConfig.Value)
+		ctr, err := runtime.LookupContainer(ctx, pidConfig.Value)
 		if err != nil {
 			return fmt.Errorf("container %q not found: %w", pidConfig.Value, err)
 		}
@@ -47,7 +47,7 @@ func setLabelOpts(s *specgen.SpecGenerator, runtime *libpod.Runtime, pidConfig s
 	if ipcConfig.IsHost() {
 		labelOpts = append(labelOpts, selinux.DisableSecOpt()...)
 	} else if ipcConfig.IsContainer() {
-		ctr, err := runtime.LookupContainer(ipcConfig.Value)
+		ctr, err := runtime.LookupContainer(ctx, ipcConfig.Value)
 		if err != nil {
 			return fmt.Errorf("container %q not found: %w", ipcConfig.Value, err)
 		}

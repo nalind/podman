@@ -24,7 +24,7 @@ import (
 // HealthCheck verifies the state and validity of the healthcheck configuration
 // on the container and then executes the healthcheck
 func (r *Runtime) HealthCheck(ctx context.Context, name string) (define.HealthCheckStatus, error) {
-	container, err := r.LookupContainer(name)
+	container, err := r.LookupContainer(ctx, name)
 	if err != nil {
 		return define.HealthCheckContainerNotFound, fmt.Errorf("unable to look up %s to perform a health check: %w", name, err)
 	}

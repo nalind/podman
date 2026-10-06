@@ -276,7 +276,7 @@ func (s *SQLiteState) getCtrConfig(id string) (*ContainerConfig, error) {
 }
 
 // Finalize a container that was pulled out of the database.
-func finalizeCtrSqlite(ctr *Container) error {
+func finalizeCtrSqlite(ctx context.Context, ctr *Container) error {
 	// Get the lock
 	lock, err := ctr.runtime.lockManager.RetrieveLock(ctr.config.LockID)
 	if err != nil {
@@ -299,7 +299,7 @@ func finalizeCtrSqlite(ctr *Container) error {
 			// OCI runtime for it using the full path.
 			if strings.HasPrefix(runtimeName, "/") {
 				if stat, err := os.Stat(runtimeName); err == nil && !stat.IsDir() {
-					newOCIRuntime, err := newConmonOCIRuntime(runtimeName, []string{runtimeName}, ctr.runtime.conmonPath, ctr.runtime.runtimeFlags, ctr.runtime.config)
+					newOCIRuntime, err := newConmonOCIRuntime(ctx, runtimeName, []string{runtimeName}, ctr.runtime.conmonPath, ctr.runtime.runtimeFlags, ctr.runtime.config)
 					if err == nil {
 						// TODO: There is a potential risk of concurrent map modification here.
 						// This is an unlikely case, though.

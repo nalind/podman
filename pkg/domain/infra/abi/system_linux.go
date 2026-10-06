@@ -80,7 +80,7 @@ func (ic *ContainerEngine) SetupRootless(ctx context.Context, noMoveProcess bool
 	}
 
 	// if there is no pid file, try to join existing containers, and create a pause process.
-	ctrs, err := ic.Libpod.GetRunningContainers()
+	ctrs, err := ic.Libpod.GetRunningContainers(ctx)
 	if err != nil {
 		return err
 	}
@@ -96,11 +96,11 @@ func (ic *ContainerEngine) SetupRootless(ctx context.Context, noMoveProcess bool
 		// In this case create a new userns.
 		if errors.Is(err, unix.ESRCH) {
 			logrus.Warnf("Failed to join existing conmon namespace, creating a new rootless podman user namespace. If there are existing container running please stop them with %q to reset the namespace", os.Args[0]+" system migrate")
-			became, ret, err = rootless.BecomeRootInUserNS(stateDir)
+			became, ret, err = rootless.BecomeRootInUserNS(ctx, stateDir)
 		}
 	} else {
 		logrus.Info("Creating a new rootless user namespace")
-		became, ret, err = rootless.BecomeRootInUserNS(stateDir)
+		became, ret, err = rootless.BecomeRootInUserNS(ctx, stateDir)
 	}
 
 	if err != nil {

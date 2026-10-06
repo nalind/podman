@@ -43,7 +43,7 @@ func ResizeTTY(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.Contains(r.URL.Path, "/containers/"):
 		name := utils.GetName(r)
-		ctnr, err := runtime.LookupContainer(name)
+		ctnr, err := runtime.LookupContainer(r.Context(), name)
 		if err != nil {
 			utils.ContainerNotFound(w, name, err)
 			return
@@ -61,7 +61,7 @@ func ResizeTTY(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 	case strings.Contains(r.URL.Path, "/exec/"):
 		name := mux.Vars(r)["id"]
-		ctnr, err := runtime.GetExecSessionContainer(name)
+		ctnr, err := runtime.GetExecSessionContainer(r.Context(), name)
 		if err != nil {
 			utils.SessionNotFound(w, name, err)
 			return

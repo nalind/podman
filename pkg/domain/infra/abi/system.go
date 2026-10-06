@@ -206,7 +206,7 @@ func (ic *ContainerEngine) SystemDf(ctx context.Context, _ entities.SystemDfOpti
 	}
 
 	// Get containers and iterate over them
-	cons, err := ic.Libpod.GetAllContainers()
+	cons, err := ic.Libpod.GetAllContainers(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -325,9 +325,9 @@ func unshareEnv(graphroot, runroot string) []string {
 		fmt.Sprintf("CONTAINERS_RUNROOT=%s", runroot))
 }
 
-func (ic *ContainerEngine) Unshare(_ context.Context, args []string, options entities.SystemUnshareOptions) error {
+func (ic *ContainerEngine) Unshare(ctx context.Context, args []string, options entities.SystemUnshareOptions) error {
 	unshare := func() error {
-		cmd := exec.Command(args[0], args[1:]...)
+		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 		cmd.Env = unshareEnv(ic.Libpod.StorageConfig().GraphRoot, ic.Libpod.StorageConfig().RunRoot)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
@@ -362,8 +362,8 @@ func (ic *ContainerEngine) Locks(ctx context.Context) (*entities.LocksReport, er
 	return &report, nil
 }
 
-func (ic *ContainerEngine) SystemCheck(_ context.Context, options entities.SystemCheckOptions) (*entities.SystemCheckReport, error) {
-	report, err := ic.Libpod.SystemCheck(options)
+func (ic *ContainerEngine) SystemCheck(ctx context.Context, options entities.SystemCheckOptions) (*entities.SystemCheckReport, error) {
+	report, err := ic.Libpod.SystemCheck(ctx, options)
 	if err != nil {
 		return nil, err
 	}

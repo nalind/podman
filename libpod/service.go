@@ -29,22 +29,22 @@ func (p *Pod) hasServiceContainer() bool {
 
 // Returns the pod's service container.
 // The pod is expected to be updated and locked.
-func (p *Pod) serviceContainer() (*Container, error) {
+func (p *Pod) serviceContainer(ctx context.Context) (*Container, error) {
 	id := p.config.ServiceContainerID
 	if id == "" {
 		return nil, fmt.Errorf("pod has no service container: %w", define.ErrNoSuchCtr)
 	}
-	return p.runtime.state.Container(id)
+	return p.runtime.state.Container(ctx, id)
 }
 
 // ServiceContainer returns the service container.
-func (p *Pod) ServiceContainer() (*Container, error) {
+func (p *Pod) ServiceContainer(ctx context.Context) (*Container, error) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	if err := p.updatePod(); err != nil {
 		return nil, err
 	}
-	return p.serviceContainer()
+	return p.serviceContainer(ctx)
 }
 
 func (c *Container) addServicePodLocked(id string) error {
@@ -76,7 +76,7 @@ type serviceContainerReport struct {
 
 // canStopServiceContainerLocked returns true if all pods of the service are stopped.
 // Note that the method acquires the container lock.
-func (c *Container) canStopServiceContainerLocked() (*serviceContainerReport, error) {
+func (c *Container) canStopServiceContainerLocked(ctx context.Context) (*serviceContainerReport, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if err := c.syncContainer(); err != nil {
@@ -87,12 +87,12 @@ func (c *Container) canStopServiceContainerLocked() (*serviceContainerReport, er
 		return nil, fmt.Errorf("internal error: checking service: container %s is not a service container", c.ID())
 	}
 
-	return c.canStopServiceContainer()
+	return c.canStopServiceContainer(ctx)
 }
 
 // canStopServiceContainer returns true if all pods of the service are stopped.
 // Note that the method expects the container to be locked.
-func (c *Container) canStopServiceContainer() (*serviceContainerReport, error) {
+func (c *Container) canStopServiceContainer(ctx context.Context) (*serviceContainerReport, error) {
 	report := serviceContainerReport{canBeStopped: true}
 	for _, id := range c.state.Service.Pods {
 		pod, err := c.runtime.LookupPod(id)
@@ -103,7 +103,7 @@ func (c *Container) canStopServiceContainer() (*serviceContainerReport, error) {
 			return nil, err
 		}
 
-		status, err := pod.GetPodStatus()
+		status, err := pod.GetPodStatus(ctx)
 		if err != nil {
 			if errors.Is(err, define.ErrNoSuchPod) {
 				continue
@@ -113,7 +113,7 @@ func (c *Container) canStopServiceContainer() (*serviceContainerReport, error) {
 
 		switch status {
 		case define.PodStateStopped, define.PodStateExited, define.PodStateErrored:
-			podCtrs, err := c.runtime.state.PodContainers(pod)
+			podCtrs, err := c.runtime.state.PodContainers(ctx, pod)
 			if err != nil {
 				return nil, err
 			}
@@ -147,7 +147,7 @@ func (p *Pod) maybeStopServiceContainer(ctx context.Context) error {
 		return nil
 	}
 
-	serviceCtr, err := p.serviceContainer()
+	serviceCtr, err := p.serviceContainer(ctx)
 	if err != nil {
 		if errors.Is(err, define.ErrNoSuchCtr) {
 			return nil
@@ -159,7 +159,7 @@ func (p *Pod) maybeStopServiceContainer(ctx context.Context) error {
 	// pod->container->servicePods hierarchy.
 	p.runtime.queueWork(func() {
 		logrus.Debugf("Pod %s has a service %s: checking if it can be stopped", p.ID(), serviceCtr.ID())
-		report, err := serviceCtr.canStopServiceContainerLocked()
+		report, err := serviceCtr.canStopServiceContainerLocked(ctx)
 		if err != nil {
 			logrus.Errorf("Checking whether service of container %s can be stopped: %v", serviceCtr.ID(), err)
 			return
@@ -213,7 +213,7 @@ func (p *Pod) maybeStartServiceContainer(ctx context.Context) error {
 		return nil
 	}
 
-	serviceCtr, err := p.serviceContainer()
+	serviceCtr, err := p.serviceContainer(ctx)
 	if err != nil {
 		return fmt.Errorf("getting pod's service container: %w", err)
 	}
@@ -260,7 +260,7 @@ func (p *Pod) maybeRemoveServiceContainer(ctx context.Context) error {
 		return nil
 	}
 
-	serviceCtr, err := p.serviceContainer()
+	serviceCtr, err := p.serviceContainer(ctx)
 	if err != nil {
 		if errors.Is(err, define.ErrNoSuchCtr) {
 			return nil

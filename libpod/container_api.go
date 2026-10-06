@@ -48,7 +48,7 @@ func (c *Container) initUnlocked(ctx context.Context, recursive bool) (retErr er
 	}
 
 	if !recursive {
-		if err := c.checkDependenciesAndHandleError(); err != nil {
+		if err := c.checkDependenciesAndHandleError(ctx); err != nil {
 			return err
 		}
 	} else {
@@ -165,7 +165,7 @@ func (c *Container) Update(ctx context.Context, updateOptions *entities.Containe
 	}
 
 	defer c.newContainerEvent(ctx, events.Update)
-	return c.update(updateOptions)
+	return c.update(ctx, updateOptions)
 }
 
 // Attach to a container.
@@ -269,7 +269,7 @@ func (c *Container) RestartWithTimeout(ctx context.Context, timeout uint) error 
 		}
 	}
 
-	if err := c.checkDependenciesAndHandleError(); err != nil {
+	if err := c.checkDependenciesAndHandleError(ctx); err != nil {
 		return err
 	}
 
@@ -370,7 +370,7 @@ func (c *Container) Kill(ctx context.Context, signal uint) error {
 	}
 
 	// Hardcode all = false, we only use all when removing.
-	if err := c.ociRuntime.KillContainer(c, signal, false); err != nil {
+	if err := c.ociRuntime.KillContainer(ctx, c, signal, false); err != nil {
 		return err
 	}
 

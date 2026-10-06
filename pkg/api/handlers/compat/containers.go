@@ -149,7 +149,7 @@ func ListContainers(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(*filterMap) > 0 {
 		for k, v := range *filterMap {
-			generatedFunc, err := filters.GenerateContainerFilterFuncs(k, v, runtime)
+			generatedFunc, err := filters.GenerateContainerFilterFuncs(r.Context(), k, v, runtime)
 			if err != nil {
 				utils.InternalServerError(w, err)
 				return
@@ -162,7 +162,7 @@ func ListContainers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !all {
-		runningOnly, err := filters.GenerateContainerFilterFuncs("status", []string{define.ContainerStateRunning.String()}, runtime)
+		runningOnly, err := filters.GenerateContainerFilterFuncs(r.Context(), "status", []string{define.ContainerStateRunning.String()}, runtime)
 		if err != nil {
 			utils.InternalServerError(w, err)
 			return
@@ -170,7 +170,7 @@ func ListContainers(w http.ResponseWriter, r *http.Request) {
 		filterFuncs = append(filterFuncs, runningOnly)
 	}
 
-	containers, err := runtime.GetContainers(false, filterFuncs...)
+	containers, err := runtime.GetContainers(r.Context(), false, filterFuncs...)
 	if err != nil {
 		utils.InternalServerError(w, err)
 		return
@@ -221,7 +221,7 @@ func GetContainer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := utils.GetName(r)
-	ctnr, err := runtime.LookupContainer(name)
+	ctnr, err := runtime.LookupContainer(r.Context(), name)
 	if err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return
@@ -677,7 +677,7 @@ func LibpodToContainerJSON(ctx context.Context, l *libpod.Container, sz bool) (*
 
 	config := handlers.ContainerConfig{
 		Config: container.Config{
-			Hostname:        l.Hostname(),
+			Hostname:        l.Hostname(ctx),
 			Domainname:      inspect.Config.DomainName,
 			User:            l.User(),
 			AttachStdin:     inspect.Config.AttachStdin,
@@ -765,7 +765,7 @@ func RenameContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctr, err := runtime.LookupContainer(name)
+	ctr, err := runtime.LookupContainer(r.Context(), name)
 	if err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return
@@ -787,7 +787,7 @@ func UpdateContainer(w http.ResponseWriter, r *http.Request) {
 	runtime := r.Context().Value(api.RuntimeKey).(*libpod.Runtime)
 	name := utils.GetName(r)
 
-	ctr, err := runtime.LookupContainer(name)
+	ctr, err := runtime.LookupContainer(r.Context(), name)
 	if err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return

@@ -553,7 +553,7 @@ func (c *Container) NewNetNS() bool {
 func (c *Container) PortMappings(ctx context.Context) ([]types.PortMapping, error) {
 	// First check if the container belongs to a network namespace (like a pod)
 	if len(c.config.NetNsCtr) > 0 {
-		netNsCtr, err := c.runtime.GetContainer(c.config.NetNsCtr)
+		netNsCtr, err := c.runtime.GetContainer(ctx, c.config.NetNsCtr)
 		if err != nil {
 			return nil, fmt.Errorf("unable to look up network namespace for container %s: %w", c.ID(), err)
 		}
@@ -704,15 +704,15 @@ func (c *Container) RuntimeName() string {
 // private UTS namespoace, an empty string will be returned
 // instead of the host's hostname because we never want to
 // send the host's hostname to a DHCP or DNS server.
-func (c *Container) hostname(network bool) string {
+func (c *Container) hostname(ctx context.Context, network bool) string {
 	if c.config.UTSNsCtr != "" {
-		utsNsCtr, err := c.runtime.GetContainer(c.config.UTSNsCtr)
+		utsNsCtr, err := c.runtime.GetContainer(ctx, c.config.UTSNsCtr)
 		if err != nil {
 			// should we return an error here?
 			logrus.Errorf("unable to look up uts namespace for container %s: %v", c.ID(), err)
 			return ""
 		}
-		return utsNsCtr.Hostname()
+		return utsNsCtr.Hostname(ctx)
 	}
 
 	if c.config.Spec.Hostname != "" {
@@ -754,8 +754,8 @@ func (c *Container) hostname(network bool) string {
 }
 
 // Hostname gets the container's hostname
-func (c *Container) Hostname() string {
-	return c.hostname(false)
+func (c *Container) Hostname(ctx context.Context) string {
+	return c.hostname(ctx, false)
 }
 
 // If the container isn't running in a private UTS namespace, Hostname()
@@ -767,8 +767,8 @@ func (c *Container) Hostname() string {
 //
 // This function should only be used to populate the ContainerHostname member
 // of the common.libnetwork.types.NetworkOptions struct.
-func (c *Container) NetworkHostname() string {
-	return c.hostname(true)
+func (c *Container) NetworkHostname(ctx context.Context) string {
+	return c.hostname(ctx, true)
 }
 
 // WorkingDir returns the containers working dir
@@ -1293,7 +1293,7 @@ func (c *Container) IsReadOnly() bool {
 // NetworkDisabled returns whether the container is running with a disabled network
 func (c *Container) NetworkDisabled(ctx context.Context) (bool, error) {
 	if c.config.NetNsCtr != "" {
-		container, err := c.runtime.state.Container(c.config.NetNsCtr)
+		container, err := c.runtime.state.Container(ctx, c.config.NetNsCtr)
 		if err != nil {
 			return false, err
 		}
@@ -1305,7 +1305,7 @@ func (c *Container) NetworkDisabled(ctx context.Context) (bool, error) {
 func (c *Container) HostNetwork(ctx context.Context) bool {
 	// If container shares network namespace with another container, check that container
 	if c.config.NetNsCtr != "" {
-		netNsCtr, err := c.runtime.state.Container(c.config.NetNsCtr)
+		netNsCtr, err := c.runtime.state.Container(ctx, c.config.NetNsCtr)
 		if err != nil {
 			return false
 		}

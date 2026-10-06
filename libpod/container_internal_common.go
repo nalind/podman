@@ -744,7 +744,7 @@ func (c *Container) generateSpec(ctx context.Context) (s *spec.Spec, cleanupFunc
 	}
 
 	// Add shared namespaces from other containers. Also handles userns=auto
-	if err := c.addSharedNamespaces(&g); err != nil {
+	if err := c.addSharedNamespaces(ctx, &g); err != nil {
 		return nil, nil, err
 	}
 
@@ -1326,11 +1326,11 @@ func (c *Container) exportCheckpoint(ctx context.Context, options ContainerCheck
 	return nil
 }
 
-func (c *Container) checkpointRestoreSupported(version int) error {
+func (c *Container) checkpointRestoreSupported(ctx context.Context, version int) error {
 	if err := criu.CheckForCriu(version); err != nil { //nolint:staticcheck,nolintlint // false-positives on freebsd because this always errors there
 		return err
 	}
-	if !c.ociRuntime.SupportsCheckpoint() {
+	if !c.ociRuntime.SupportsCheckpoint(ctx) {
 		return errors.New("configured runtime does not support checkpoint/restore")
 	}
 	return nil
@@ -1386,7 +1386,7 @@ func (c *Container) freezeForCheckpoint(ctx context.Context, options ContainerCh
 // Containers running without cgroups cannot be frozen and keep the previous,
 // weaker guarantee. A freeze failure is non-fatal so existing setups keep working.
 func (c *Container) checkpoint(ctx context.Context, options ContainerCheckpointOptions) (*define.CRIUCheckpointRestoreStatistics, int64, error) {
-	if err := c.checkpointRestoreSupported(criu.MinCriuVersion); err != nil {
+	if err := c.checkpointRestoreSupported(ctx, criu.MinCriuVersion); err != nil {
 		return nil, 0, err
 	}
 
@@ -1415,7 +1415,7 @@ func (c *Container) checkpoint(ctx context.Context, options ContainerCheckpointO
 	// has been written.
 	defer c.freezeForCheckpoint(ctx, options)()
 
-	runtimeCheckpointDuration, err := c.ociRuntime.CheckpointContainer(c, options)
+	runtimeCheckpointDuration, err := c.ociRuntime.CheckpointContainer(ctx, c, options)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1621,11 +1621,11 @@ func (c *Container) restore(ctx context.Context, options ContainerCheckpointOpti
 		}
 		return criu.PodCriuVersion
 	}()
-	if err := c.checkpointRestoreSupported(minCriuVersion); err != nil {
+	if err := c.checkpointRestoreSupported(ctx, minCriuVersion); err != nil {
 		return nil, 0, err
 	}
 
-	if options.Pod != "" && !crutils.CRRuntimeSupportsPodCheckpointRestore(c.ociRuntime.Path()) {
+	if options.Pod != "" && !crutils.CRRuntimeSupportsPodCheckpointRestore(ctx, c.ociRuntime.Path()) {
 		return nil, 0, fmt.Errorf("runtime %s does not support pod restore", c.ociRuntime.Path())
 	}
 
@@ -1765,7 +1765,7 @@ func (c *Container) restore(ctx context.Context, options ContainerCheckpointOpti
 			return nil, 0, fmt.Errorf("pod %q cannot be retrieved: %w", options.Pod, err)
 		}
 
-		infraContainer, err := pod.InfraContainer()
+		infraContainer, err := pod.InfraContainer(ctx)
 		if err != nil {
 			return nil, 0, fmt.Errorf("cannot retrieved infra container from pod %q: %w", options.Pod, err)
 		}
@@ -2019,7 +2019,7 @@ func (c *Container) restore(ctx context.Context, options ContainerCheckpointOpti
 }
 
 // Retrieves a container's "root" net namespace container dependency.
-func (c *Container) getRootNetNsDepCtr() (depCtr *Container, err error) {
+func (c *Container) getRootNetNsDepCtr(ctx context.Context) (depCtr *Container, err error) {
 	containersVisited := map[string]int{c.config.ID: 1}
 	nextCtr := c.config.NetNsCtr
 	for nextCtr != "" {
@@ -2029,7 +2029,7 @@ func (c *Container) getRootNetNsDepCtr() (depCtr *Container, err error) {
 		}
 		containersVisited[nextCtr] = 1
 
-		depCtr, err = c.runtime.state.Container(nextCtr)
+		depCtr, err = c.runtime.state.Container(ctx, nextCtr)
 		if err != nil {
 			return nil, fmt.Errorf("fetching dependency %s of container %s: %w", c.config.NetNsCtr, c.ID(), err)
 		}
@@ -2091,7 +2091,7 @@ func (c *Container) makeBindMounts(ctx context.Context) error {
 			// We want /etc/resolv.conf and /etc/hosts from the
 			// other container. Unless we're not creating both of
 			// them.
-			depCtr, err := c.getRootNetNsDepCtr()
+			depCtr, err := c.getRootNetNsDepCtr(ctx)
 			if err != nil {
 				return fmt.Errorf("fetching network namespace dependency container for container %s: %w", c.ID(), err)
 			}
@@ -2274,7 +2274,7 @@ rootless=%d
 		}
 	}
 
-	return c.makeHostnameBindMount()
+	return c.makeHostnameBindMount(ctx)
 }
 
 // createResolvConf create the resolv.conf file and bind mount it
@@ -2455,9 +2455,9 @@ func getLocalhostHostEntry(c *Container) etchosts.HostEntries {
 }
 
 // getHostsEntries returns the container ip host entries for the correct netmode
-func (c *Container) getHostsEntries() etchosts.HostEntries {
+func (c *Container) getHostsEntries(ctx context.Context) etchosts.HostEntries {
 	var entries etchosts.HostEntries
-	names := []string{c.Hostname(), c.config.Name}
+	names := []string{c.Hostname(ctx), c.config.Name}
 	switch {
 	case c.config.NetMode.IsBridge():
 		entries = etchosts.GetNetworkHostEntries(c.state.NetworkStatus, names...)
@@ -2489,7 +2489,7 @@ func (c *Container) addHosts(ctx context.Context) error {
 		// no host file nothing to do
 		return nil
 	}
-	containerIPsEntries := c.getHostsEntries()
+	containerIPsEntries := c.getHostsEntries(ctx)
 
 	// Consider container level BaseHostsFile configuration first.
 	// If it is empty, fallback to containers.conf level configuration.

@@ -43,7 +43,7 @@ func TopContainer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := utils.GetName(r)
-	c, err := runtime.LookupContainer(name)
+	c, err := runtime.LookupContainer(r.Context(), name)
 	if err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return

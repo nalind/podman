@@ -207,7 +207,7 @@ func (c *Container) getContainerInspectData(ctx context.Context, size bool, driv
 		data.State.Health = nil
 	}
 
-	networkConfig, err := c.getContainerNetworkInfo()
+	networkConfig, err := c.getContainerNetworkInfo(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +218,7 @@ func (c *Container) getContainerInspectData(ctx context.Context, size bool, driv
 		addInspectPortsExpose(c.config.ExposedPorts, data.NetworkSettings.Ports)
 	}
 
-	inspectConfig := c.generateInspectContainerConfig(ctrSpec)
+	inspectConfig := c.generateInspectContainerConfig(ctx, ctrSpec)
 	data.Config = inspectConfig
 
 	hostConfig, err := c.generateInspectContainerHostConfig(ctrSpec, namedVolumes, mounts)
@@ -374,10 +374,10 @@ func parseMountOptionsForInspect(options []string, mount *define.InspectMount) {
 }
 
 // Generate the InspectContainerConfig struct for the Config field of Inspect.
-func (c *Container) generateInspectContainerConfig(spec *spec.Spec) *define.InspectContainerConfig {
+func (c *Container) generateInspectContainerConfig(ctx context.Context, spec *spec.Spec) *define.InspectContainerConfig {
 	ctrConfig := new(define.InspectContainerConfig)
 
-	ctrConfig.Hostname = c.Hostname()
+	ctrConfig.Hostname = c.Hostname(ctx)
 	ctrConfig.User = c.config.User
 	if spec.Process != nil {
 		ctrConfig.Tty = spec.Process.Terminal

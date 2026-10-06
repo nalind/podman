@@ -109,7 +109,7 @@ func (v *Volume) mount(ctx context.Context) error {
 	}
 
 	mountArgs = append(mountArgs, volDevice, v.config.MountPoint)
-	mountCmd := exec.Command(mountPath, mountArgs...)
+	mountCmd := exec.CommandContext(ctx, mountPath, mountArgs...)
 
 	logrus.Debugf("Running mount command: %s %s", mountPath, strings.Join(mountArgs, " "))
 	if output, err := mountCmd.CombinedOutput(); err != nil {

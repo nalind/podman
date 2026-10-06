@@ -174,8 +174,8 @@ func (c *Container) reloadNetwork(ctx context.Context) error {
 }
 
 // Add an existing container's network jail
-func (c *Container) addNetworkContainer(g *generate.Generator, ctr string) error {
-	nsCtr, err := c.runtime.state.Container(ctr)
+func (c *Container) addNetworkContainer(ctx context.Context, g *generate.Generator, ctr string) error {
+	nsCtr, err := c.runtime.state.Container(ctx, ctr)
 	if err != nil {
 		return fmt.Errorf("retrieving dependency %s of container %s from state: %w", ctr, c.ID(), err)
 	}
@@ -227,9 +227,9 @@ func (c *Container) addSystemdMounts(_ *generate.Generator) error {
 	return nil
 }
 
-func (c *Container) addSharedNamespaces(g *generate.Generator) error {
+func (c *Container) addSharedNamespaces(ctx context.Context, g *generate.Generator) error {
 	if c.config.NetNsCtr != "" {
-		if err := c.addNetworkContainer(g, c.config.NetNsCtr); err != nil {
+		if err := c.addNetworkContainer(ctx, g, c.config.NetNsCtr); err != nil {
 			return err
 		}
 	}
@@ -252,7 +252,7 @@ func (c *Container) addSharedNamespaces(g *generate.Generator) error {
 	// Set the HOSTNAME environment variable unless explicitly overridden by
 	// the user (already present in OCI spec). If we don't have a UTS ns,
 	// set it to the host's hostname instead.
-	hostname := c.Hostname()
+	hostname := c.Hostname(ctx)
 
 	// TODO: make this optional, needs progress on adding FreeBSD section to the spec
 	foundUTS := true
@@ -310,7 +310,7 @@ func setVolumeAtime(mountPoint string, st os.FileInfo) error {
 	return nil
 }
 
-func (c *Container) makeHostnameBindMount() error {
+func (c *Container) makeHostnameBindMount(context.Context) error {
 	return nil
 }
 
@@ -321,7 +321,7 @@ func (c *Container) getConmonPidFd() int {
 	return -1
 }
 
-func (c *Container) jailName() (string, error) {
+func (c *Container) jailName(ctx context.Context) (string, error) {
 	// If this container is in a pod, get the vnet name from the
 	// corresponding infra container
 	var ic *Container
@@ -331,7 +331,7 @@ func (c *Container) jailName() (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("cannot find infra container for pod %s: %w", c.config.Pod, err)
 		}
-		ic, err = pod.InfraContainer()
+		ic, err = pod.InfraContainer(ctx)
 		if err != nil {
 			return "", fmt.Errorf("getting infra container for pod %s: %w", pod.ID(), err)
 		}

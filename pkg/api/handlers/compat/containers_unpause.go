@@ -15,7 +15,7 @@ func UnpauseContainer(w http.ResponseWriter, r *http.Request) {
 
 	// /{version}/containers/(name)/unpause
 	name := utils.GetName(r)
-	con, err := runtime.LookupContainer(name)
+	con, err := runtime.LookupContainer(r.Context(), name)
 	if err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return

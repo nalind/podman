@@ -77,7 +77,7 @@ func (r *Runtime) configureNetNS(ctx context.Context, ctr *Container, ctrNS stri
 		return nil, nil
 	}
 
-	netOpts := ctr.getNetworkOptions(networks)
+	netOpts := ctr.getNetworkOptions(ctx, networks)
 	netStatus, err := r.setUpNetwork(ctrNS, netOpts)
 	if err != nil {
 		return nil, err
@@ -131,7 +131,7 @@ func (r *Runtime) teardownNetNS(ctx context.Context, ctr *Container) error {
 		// do not return an error otherwise we would prevent network cleanup
 		logrus.Errorf("failed to free gvproxy machine ports: %v", err)
 	}
-	if err := r.teardownNetwork(ctr); err != nil {
+	if err := r.teardownNetwork(ctx, ctr); err != nil {
 		return err
 	}
 
@@ -159,7 +159,7 @@ func (r *Runtime) teardownNetNS(ctx context.Context, ctr *Container) error {
 
 // TODO (5.0): return the statistics per network interface
 // This would allow better compat with docker.
-func getContainerNetIO(ctr *Container) (map[string]define.ContainerNetworkStats, error) {
+func getContainerNetIO(ctx context.Context, ctr *Container) (map[string]define.ContainerNetworkStats, error) {
 	if ctr.state.NetNS == "" {
 		// If NetNS is nil, it was set as none, and no netNS
 		// was set up this is a valid state and thus return no
@@ -169,12 +169,12 @@ func getContainerNetIO(ctr *Container) (map[string]define.ContainerNetworkStats,
 
 	// First try running 'netstat -j' - this lets us retrieve stats from
 	// containers which don't have a separate vnet jail.
-	cmd := exec.Command("netstat", "-j", ctr.state.NetNS, "-bi", "--libxo", "json")
+	cmd := exec.CommandContext(ctx, "netstat", "-j", ctr.state.NetNS, "-bi", "--libxo", "json")
 	out, err := cmd.Output()
 	if err != nil {
 		// Fall back to using jexec so that this still works on 13.2
 		// which does not have the -j flag.
-		cmd := exec.Command("jexec", ctr.state.NetNS, "netstat", "-bi", "--libxo", "json")
+		cmd := exec.CommandContext(ctx, "jexec", ctr.state.NetNS, "netstat", "-bi", "--libxo", "json")
 		out, err = cmd.Output()
 	}
 	if err != nil {

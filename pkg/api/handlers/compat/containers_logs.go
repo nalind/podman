@@ -47,7 +47,7 @@ func LogsFromContainer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	name := utils.GetName(r)
-	ctnr, err := runtime.LookupContainer(name)
+	ctnr, err := runtime.LookupContainer(r.Context(), name)
 	if err != nil {
 		utils.ContainerNotFound(w, name, err)
 		return

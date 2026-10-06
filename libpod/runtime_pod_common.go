@@ -15,7 +15,7 @@ import (
 )
 
 // NewPod makes a new, empty pod
-func (r *Runtime) NewPod(p specgen.PodSpecGenerator, options ...PodCreateOption) (_ *Pod, deferredErr error) {
+func (r *Runtime) NewPod(ctx context.Context, p specgen.PodSpecGenerator, options ...PodCreateOption) (_ *Pod, deferredErr error) {
 	if !r.valid {
 		return nil, define.ErrRuntimeStopped
 	}
@@ -73,7 +73,7 @@ func (r *Runtime) NewPod(p specgen.PodSpecGenerator, options ...PodCreateOption)
 	var addPodErr error
 	for {
 		if generateName {
-			name, err := r.generateName()
+			name, err := r.generateName(ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -195,7 +195,7 @@ func (r *Runtime) removePod(ctx context.Context, p *Pod, removeCtrs, force bool,
 		return nil, err
 	}
 
-	ctrs, err := r.state.PodContainers(p)
+	ctrs, err := r.state.PodContainers(ctx, p)
 	if err != nil {
 		return nil, err
 	}

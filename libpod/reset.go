@@ -126,7 +126,7 @@ func (r *Runtime) Reset(ctx context.Context) error {
 		}
 	}
 
-	ctrs, err := r.GetAllContainers()
+	ctrs, err := r.GetAllContainers(ctx)
 	if err != nil {
 		return err
 	}

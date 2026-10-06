@@ -1917,7 +1917,7 @@ func (ic *ContainerEngine) PlayKubeDown(ctx context.Context, body io.Reader, opt
 			}
 			return nil, err
 		}
-		ctr, err := pod.ServiceContainer()
+		ctr, err := pod.ServiceContainer(ctx)
 		if errors.Is(err, define.ErrNoSuchCtr) {
 			continue
 		}

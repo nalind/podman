@@ -50,7 +50,7 @@ func (r *ConmonOCIRuntime) ExecContainer(ctx context.Context, c *Container, sess
 
 	ociLog := c.execOCILog(sessionID)
 
-	execCmd, pipes, err := r.startExec(c, sessionID, options, attachStdin, ociLog)
+	execCmd, pipes, err := r.startExec(ctx, c, sessionID, options, attachStdin, ociLog)
 	if err != nil {
 		return -1, nil, err
 	}
@@ -115,7 +115,7 @@ func (r *ConmonOCIRuntime) ExecContainerHTTP(ctr *Container, sessionID string, o
 
 	ociLog := ctr.execOCILog(sessionID)
 
-	execCmd, pipes, err := r.startExec(ctr, sessionID, options, attachStdin, ociLog)
+	execCmd, pipes, err := r.startExec(req.Context(), ctr, sessionID, options, attachStdin, ociLog)
 	if err != nil {
 		return -1, nil, err
 	}
@@ -153,14 +153,14 @@ type conmonPipeData struct {
 
 // ExecContainerDetached executes a command in a running container, but does
 // not attach to it.
-func (r *ConmonOCIRuntime) ExecContainerDetached(_ context.Context, ctr *Container, sessionID string, options *ExecOptions, stdin bool) (int, error) {
+func (r *ConmonOCIRuntime) ExecContainerDetached(ctx context.Context, ctr *Container, sessionID string, options *ExecOptions, stdin bool) (int, error) {
 	if options == nil {
 		return -1, fmt.Errorf("must provide exec options to ExecContainerHTTP: %w", define.ErrInvalidArg)
 	}
 
 	ociLog := ctr.execOCILog(sessionID)
 
-	execCmd, pipes, err := r.startExec(ctr, sessionID, options, stdin, ociLog)
+	execCmd, pipes, err := r.startExec(ctx, ctr, sessionID, options, stdin, ociLog)
 	if err != nil {
 		return -1, err
 	}
@@ -207,7 +207,7 @@ func (r *ConmonOCIRuntime) ExecAttachResize(ctx context.Context, ctr *Container,
 }
 
 // ExecStopContainer stops a given exec session in a running container.
-func (r *ConmonOCIRuntime) ExecStopContainer(ctr *Container, sessionID string, timeout uint) error {
+func (r *ConmonOCIRuntime) ExecStopContainer(ctx context.Context, ctr *Container, sessionID string, timeout uint) error {
 	pid, pidData, err := ctr.getExecSessionPID(sessionID)
 	if err != nil {
 		return err
@@ -241,7 +241,7 @@ func (r *ConmonOCIRuntime) ExecStopContainer(ctr *Container, sessionID string, t
 		}
 
 		// Wait for the PID to stop
-		if err := waitPidStop(pid, time.Duration(timeout)*time.Second); err != nil {
+		if err := waitPidStop(ctx, pid, time.Duration(timeout)*time.Second); err != nil {
 			logrus.Infof("Timed out waiting for container %s exec session %s to stop, resorting to SIGKILL: %v", ctr.ID(), sessionID, err)
 		} else {
 			// No error, container is dead
@@ -259,7 +259,7 @@ func (r *ConmonOCIRuntime) ExecStopContainer(ctr *Container, sessionID string, t
 	}
 
 	// Wait for the PID to stop
-	if err := waitPidStop(pid, killContainerTimeout); err != nil {
+	if err := waitPidStop(ctx, pid, killContainerTimeout); err != nil {
 		return fmt.Errorf("timed out waiting for container %s exec session %s PID %d to stop after SIGKILL: %w", ctr.ID(), sessionID, pid, err)
 	}
 
@@ -326,7 +326,7 @@ func (p *execPipes) cleanup() {
 }
 
 // Start an exec session's conmon parent from the given options.
-func (r *ConmonOCIRuntime) startExec(c *Container, sessionID string, options *ExecOptions, attachStdin bool, ociLog string) (_ *exec.Cmd, _ *execPipes, deferredErr error) {
+func (r *ConmonOCIRuntime) startExec(ctx context.Context, c *Container, sessionID string, options *ExecOptions, attachStdin bool, ociLog string) (_ *exec.Cmd, _ *execPipes, deferredErr error) {
 	pipes := new(execPipes)
 
 	if options == nil {
@@ -432,7 +432,7 @@ func (r *ConmonOCIRuntime) startExec(c *Container, sessionID string, options *Ex
 	logrus.WithFields(logrus.Fields{
 		"args": args,
 	}).Debugf("running conmon: %s", r.conmonPath)
-	execCmd := exec.Command(r.conmonPath, args...)
+	execCmd := exec.CommandContext(ctx, r.conmonPath, args...)
 
 	// TODO: This is commented because it doesn't make much sense in HTTP
 	// attach, and I'm not certain it does for non-HTTP attach as well.

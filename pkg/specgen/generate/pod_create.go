@@ -62,12 +62,12 @@ func MakePod(ctx context.Context, p *entities.PodSpec, rt *libpod.Runtime) (_ *l
 		p.PodSpecGen.ResourceLimits.BlockIO = spec.ResourceLimits.BlockIO
 	}
 
-	options, err := createPodOptions(&p.PodSpecGen)
+	options, err := createPodOptions(ctx, &p.PodSpecGen)
 	if err != nil {
 		return nil, err
 	}
 
-	pod, err := rt.NewPod(p.PodSpecGen, options...)
+	pod, err := rt.NewPod(ctx, p.PodSpecGen, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +114,7 @@ func MakePod(ctx context.Context, p *entities.PodSpec, rt *libpod.Runtime) (_ *l
 	return pod, nil
 }
 
-func createPodOptions(p *specgen.PodSpecGenerator) ([]libpod.PodCreateOption, error) {
+func createPodOptions(ctx context.Context, p *specgen.PodSpecGenerator) ([]libpod.PodCreateOption, error) {
 	var options []libpod.PodCreateOption
 
 	if p.ShareParent == nil || (p.ShareParent != nil && *p.ShareParent) {
@@ -134,7 +134,7 @@ func createPodOptions(p *specgen.PodSpecGenerator) ([]libpod.PodCreateOption, er
 	}
 
 	if len(p.ServiceContainerID) > 0 {
-		options = append(options, libpod.WithServiceContainer(p.ServiceContainerID))
+		options = append(options, libpod.WithServiceContainer(ctx, p.ServiceContainerID))
 	}
 
 	if len(p.CgroupParent) > 0 {
@@ -282,7 +282,7 @@ func PodConfigToSpec(ctx context.Context, rt *libpod.Runtime, spec *specgen.PodS
 		if err != nil {
 			return nil, err
 		}
-		_, _, err = ConfigToSpec(rt, infraSpec, infraID)
+		_, _, err = ConfigToSpec(ctx, rt, infraSpec, infraID)
 		if err != nil {
 			return nil, err
 		}
@@ -294,7 +294,7 @@ func PodConfigToSpec(ctx context.Context, rt *libpod.Runtime, spec *specgen.PodS
 		infraOptions.IsInfra = true
 
 		n := infraSpec.Name
-		_, err = rt.LookupContainer(n + "-clone")
+		_, err = rt.LookupContainer(ctx, n+"-clone")
 		if err == nil { // if we found a ctr with this name, set it so the below switch can tell
 			n += "-clone"
 		}
@@ -304,7 +304,7 @@ func PodConfigToSpec(ctx context.Context, rt *libpod.Runtime, spec *specgen.PodS
 			ind := strings.Index(n, "-clone") + 6
 			num, err := strconv.Atoi(n[ind:])
 			if num == 0 && err != nil { // clone1 is hard to get with this logic, just check for it here.
-				_, err = rt.LookupContainer(n + "1")
+				_, err = rt.LookupContainer(ctx, n+"1")
 				if err != nil {
 					infraSpec.Name = n + "1"
 					break
@@ -317,7 +317,7 @@ func PodConfigToSpec(ctx context.Context, rt *libpod.Runtime, spec *specgen.PodS
 			for err == nil {
 				count++
 				tempN := n + strconv.Itoa(count)
-				_, err = rt.LookupContainer(tempN)
+				_, err = rt.LookupContainer(ctx, tempN)
 			}
 			n += strconv.Itoa(count)
 			infraSpec.Name = n
